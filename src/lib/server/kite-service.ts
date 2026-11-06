@@ -68,7 +68,8 @@ export async function syncKite() {
     // Known asset types from the security master win over inference
     const secs = new Map(list<{ symbol: string; assetType: SnapshotItem["assetType"] }>("securities").map((x) => [x.symbol, x.assetType]));
     for (const i of items) i.assetType = secs.get(i.symbol) ?? i.assetType;
-    const snap: HoldingsSnapshot = { id: `SNAP-KITE-${Date.now()}`, takenAt: new Date().toISOString(), asOfDate, source: "KITE_API", quality: "VERIFIED", items, cash: margins.equity?.net };
+    const snap: HoldingsSnapshot = { id: `SNAP-KITE-${Date.now()}`, takenAt: new Date().toISOString(), asOfDate, source: "KITE_API", quality: "VERIFIED", items,
+      funds: margins.equity ? { cash: margins.equity.available.cash, liveBalance: margins.equity.available.live_balance, collateral: margins.equity.available.collateral, net: margins.equity.net, openingBalance: margins.equity.available.opening_balance } : undefined };
     put("snapshots", snap.id, snap);
     upsertPrices(items.map((i) => ({ symbol: i.symbol, date: asOfDate, close: i.lastPrice, source: "KITE_API" as const })));
     ensureSecurities([
@@ -76,7 +77,7 @@ export async function syncKite() {
       ...mf.map((m) => ({ symbol: m.tradingsymbol, name: m.fund, assetType: "MF" as const })),
     ]);
     kvSet("kite_instruments", JSON.stringify(Object.fromEntries(holdings.map((h) => [h.tradingsymbol, h.instrument_token]))));
-    const info = { at: snap.takenAt, holdings: holdings.length, mf: mf.length, cash: margins.equity?.net ?? null };
+    const info = { at: snap.takenAt, holdings: holdings.length, mf: mf.length, cash: margins.equity?.available.cash ?? null, buyingPower: margins.equity?.net ?? null };
     kvSet("kite_last_sync", JSON.stringify(info));
     audit("kite.sync", `${holdings.length} holdings, ${mf.length} MF`);
     invalidate();

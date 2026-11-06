@@ -15,13 +15,24 @@ type DB = InstanceType<SqliteMod["DatabaseSync"]>;
 
 let db: DB | null = null;
 
+/**
+ * DATA_MODE=live (default) uses data/portfolio.db and NEVER accepts synthetic data.
+ * DATA_MODE=demo uses a separate data/demo.db and refuses broker connections and real imports.
+ */
+export function dataMode(): "live" | "demo" {
+  return process.env.DATA_MODE === "demo" ? "demo" : "live";
+}
+export function dbFile(): string {
+  const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
+  return process.env.DB_FILE || path.join(dir, dataMode() === "demo" ? "demo.db" : "portfolio.db");
+}
+
 export function getDb(): DB {
   if (db) return db;
   // process.getBuiltinModule avoids bundler resolution of the node:sqlite builtin.
   const { DatabaseSync } = process.getBuiltinModule("node:sqlite") as SqliteMod;
-  const dir = process.env.DATA_DIR || path.join(process.cwd(), "data");
-  fs.mkdirSync(dir, { recursive: true });
-  const file = process.env.DB_FILE || path.join(dir, "portfolio.db");
+  const file = dbFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   db = new DatabaseSync(file);
   db.exec(`
     PRAGMA journal_mode = WAL;
@@ -173,4 +184,50 @@ export function purgeSource(source: string) {
 
 export function wipeAll() {
   getDb().exec("DELETE FROM docs; DELETE FROM prices; DELETE FROM kv WHERE key NOT LIKE 'settings%';");
+}
+
+/** Consistent online backup (SQLite VACUUM INTO). Returns the backup path. */
+export function backupDb(label = "backup"): string {
+  const file = dbFile();
+  const out = file.replace(/\.db$/, "") + `.${label}-${new Date().toISOString().replace(/[:.]/g, "-")}.db`;
+  getDb().exec(`VACUUM INTO '${out.replace(/'/g, "''")}'`);
+  audit("db.backup", path.basename(out));
+  return out;
+}
+
+export interface SyntheticInventory { securities: number; trades: number; cash: number; fundamentals: number; research: number; snapshots: number; other: number; prices: number; priceSymbols: number; benchmarkSeries: number; total: number }
+
+export function syntheticInventory(source = "SYNTHETIC_SAMPLE"): SyntheticInventory {
+  const d = getDb();
+  const rows = d.prepare("SELECT collection, data FROM docs").all() as { collection: string; data: string }[];
+  const inv: SyntheticInventory = { securities: 0, trades: 0, cash: 0, fundamentals: 0, research: 0, snapshots: 0, other: 0, prices: 0, priceSymbols: 0, benchmarkSeries: 0, total: 0 };
+  for (const r of rows) {
+    const doc = JSON.parse(r.data);
+    const synthetic = doc.source === source || doc.quality === "SYNTHETIC" || (r.collection === "fundamentals" && /SYNTHETIC/i.test(String(doc.source))) || (typeof doc.symbol === "string" && /^ZZ/.test(doc.symbol) && r.collection === "research");
+    if (!synthetic) continue;
+    if (r.collection in inv) (inv as unknown as Record<string, number>)[r.collection]++; else inv.other++;
+  }
+  const p = d.prepare("SELECT COUNT(*) AS n, COUNT(DISTINCT symbol) AS s, COUNT(DISTINCT CASE WHEN symbol LIKE 'IDX:%' THEN symbol END) AS b FROM prices WHERE source = ?").get(source) as { n: number; s: number; b: number };
+  inv.prices = p.n; inv.priceSymbols = p.s; inv.benchmarkSeries = p.b;
+  inv.total = inv.securities + inv.trades + inv.cash + inv.fundamentals + inv.research + inv.snapshots + inv.other + inv.prices;
+  return inv;
+}
+
+/** Remove synthetic records (incl. fundamentals/research tagged synthetic). Settings are preserved. */
+export function purgeSynthetic(source = "SYNTHETIC_SAMPLE") {
+  const d = getDb();
+  const rows = d.prepare("SELECT collection, id, data FROM docs").all() as { collection: string; id: string; data: string }[];
+  let n = 0;
+  d.exec("BEGIN");
+  try {
+    for (const r of rows) {
+      const doc = JSON.parse(r.data);
+      const synthetic = doc.source === source || doc.quality === "SYNTHETIC" || (r.collection === "fundamentals" && /SYNTHETIC/i.test(String(doc.source))) || (r.collection === "research" && typeof doc.symbol === "string" && /^ZZ/.test(doc.symbol));
+      if (synthetic) { d.prepare("DELETE FROM docs WHERE collection = ? AND id = ?").run(r.collection, r.id); n++; }
+    }
+    n += Number(d.prepare("DELETE FROM prices WHERE source = ?").run(source).changes);
+    d.exec("COMMIT");
+  } catch (e) { d.exec("ROLLBACK"); throw e; }
+  audit("synthetic.purge", String(n));
+  return n;
 }

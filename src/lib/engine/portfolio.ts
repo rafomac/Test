@@ -7,7 +7,7 @@ import type {
   AssetType, CapCategory, CashEntry, CorporateAction, DataQuality, Fundamentals, HoldingsSnapshot, PricePoint,
   ResearchEntry, Security, Settings, Trade,
 } from "../types";
-import { classify, inferAssetType, INDEX_ETF_LOOKTHROUGH, type Classification } from "./classify";
+import { classify, classifyAt, inferAssetType, INDEX_ETF_LOOKTHROUGH, type Classification } from "./classify";
 import { addDays, daysBetween, monthKey } from "./dates";
 import { runLedger, type Position } from "./positions";
 import {
@@ -17,6 +17,7 @@ import {
 import { annualise, xirr, type CashFlow } from "./xirr";
 import { computeSip, type SipResult } from "./sip";
 import { concentration, daysToLiquidate, relativeStats, returnStats, stressTest, type HoldingForRisk } from "./risk";
+import { accountSeries, annualisationNote, cashLedger, FEES_NOTE, resolveCash, TAX_NOTE, valueBridge, type AccountPoint, type Bridge, type CashResolution, type MetricDef } from "./capital";
 import { criteriaCheck, peBand, peg, researchScore, returnMultiple, revenueCagr, technicals, tierFor, unpledgedPromoter, type ScoreResult, type Technicals } from "./research";
 
 export interface PortfolioData {
@@ -60,6 +61,11 @@ export interface HoldingRow {
   score: ScoreResult;
   conviction: ResearchEntry["conviction"];
   limitPct: number;
+  /** invested ÷ position-limit denominator (see settings.positionLimitDenominator). */
+  limitWeight: number | null;
+  limitCapacity: number | null; // remaining ₹ before conviction limit (negative = above)
+  aboveLimit: number; // ₹ above conviction limit
+  hardCapacity: number | null;
   overLimit: boolean;
   tech: Technicals | null;
   lastReviewed?: string;
@@ -79,6 +85,36 @@ export interface AllocationRow {
   targetValue: number | null;
   shortfall: number | null; // targetValue − value (positive = underweight)
   count: number;
+}
+
+export interface DecompositionTerm { key: string; label: string; value: number | null; evidence: string }
+
+export interface CapitalSection {
+  measures: {
+    totalMarketValue: number | null; // securities + broker cash
+    securitiesValue: number;
+    brokerCash: number | null;
+    byType: Record<AssetType, { value: number; cost: number; count: number }>;
+    investedTotal: number;
+    netContributions: number | null;
+    deposits: number;
+    withdrawals: number;
+  };
+  reserve: { availableCash: number | null; liquidBees: number; combined: number; buyingPower: number | null; collateral: number | null; source: string; warnings: string[]; liquidNote: string };
+  bridge: Bridge;
+  bridgeByYear: Bridge[];
+  account: { date: string; value: number | null; securities: number | null; cash: number; contributions: number; twrIndex: number | null }[];
+  accountTwr: number | null;
+  accountTwrAnnualised: number | null;
+  equitySleeveTwr: number | null;
+  metrics: MetricDef[];
+  differences: { a: string; b: string; diff: number | null; explanation: string }[];
+  decomposition: { window: { from: string; to: string; days: number; annualised: boolean } | null; terms: DecompositionTerm[]; total: number | null; note: string };
+  attributionByCap: { key: string; gain: number; share: number; weight: number }[];
+  attributionBySector: { key: string; gain: number; share: number; weight: number }[];
+  concentrationOfGains: { top1: number; top3: number; top5: number; positions: number; winnersForHalf: number };
+  deployment: { month: string; target: number; contribution: number; parkedInReserve: number; stockBuys: number; stockSells: number; byCap: Record<string, number>; contributionAch: number | null; deploymentAch: number | null; allocationAch: number | null }[];
+  limitDenominator: { kind: Settings["positionLimitDenominator"]; label: string; value: number };
 }
 
 export interface Availability { available: boolean; reason?: string }
@@ -122,7 +158,7 @@ export interface PortfolioAnalytics {
   };
   series: SeriesPoint[];
   seriesGaps: { from: string; to: string; symbols: string[] }[];
-  targetSeries: { date: string; target: number; actual: number | null }[];
+  targetSeries: { date: string; target: number; actual: number | null; accountTarget: number | null; accountActual: number | null; contributions: number | null }[];
   monthly: PeriodReturn[];
   calendar: PeriodReturn[];
   rolling12: { key: string; ret: number | null }[];
@@ -131,6 +167,7 @@ export interface PortfolioAnalytics {
   stats: ReturnType<typeof returnStats>;
   maxDrawdown: number | null;
   sip: SipResult;
+  capital: CapitalSection;
   allocation: {
     directEquity: AllocationRow[];
     assetTypes: AllocationRow[];
@@ -159,6 +196,8 @@ export interface PortfolioAnalytics {
   };
 }
 
+export const DENOM_LABEL: Record<Settings["positionLimitDenominator"], string> = { directEquityCost: "direct-equity invested cost", totalInvestedCost: "total invested cost (all assets)", netContributions: "net external contributions" };
+
 const CAPS: CapCategory[] = ["Large", "Mid", "Small", "Micro", "Nano", "Unclassified"];
 
 export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioAnalytics {
@@ -183,7 +222,7 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
 
   // ---------- Holdings ----------
   const symbols = new Set<string>([...snapItem.keys(), ...[...ledger.positions.values()].filter((p) => p.quantity > 0).map((p) => p.symbol)]);
-  const raw: Omit<HoldingRow, "weight" | "costWeight">[] = [];
+  const raw: Omit<HoldingRow, "weight" | "costWeight" | "limitWeight" | "limitCapacity" | "aboveLimit" | "hardCapacity">[] = [];
   const reconciliation: PortfolioAnalytics["dataQuality"]["reconciliation"] = [];
   for (const sym of symbols) {
     const sec = secMap.get(sym);
@@ -241,9 +280,20 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
   }
   const mv = raw.reduce((acc, h) => acc + (h.value ?? 0), 0);
   const inv = raw.reduce((acc, h) => acc + h.invested, 0);
+  const directCost = raw.filter((h) => h.assetType === "STOCK").reduce((acc, h) => acc + h.invested, 0);
+  const netContrib0 = cash.filter((c) => c.kind === "DEPOSIT").reduce((a, c) => a + c.amount, 0) - cash.filter((c) => c.kind === "WITHDRAWAL").reduce((a, c) => a + c.amount, 0);
+  const limitDenominator = s.positionLimitDenominator === "totalInvestedCost" ? inv : s.positionLimitDenominator === "netContributions" && netContrib0 > 0 ? netContrib0 : directCost;
   const holdings: HoldingRow[] = raw.map((h) => {
     const costWeight = inv > 0 ? h.invested / inv : null;
-    return { ...h, weight: mv > 0 && h.value !== null ? h.value / mv : null, costWeight, overLimit: h.assetType === "STOCK" && costWeight !== null && costWeight * 100 > h.limitPct };
+    const isStock = h.assetType === "STOCK";
+    const limitWeight = isStock && limitDenominator > 0 ? h.invested / limitDenominator : null;
+    const cap = isStock ? (h.limitPct / 100) * limitDenominator : null;
+    return {
+      ...h, weight: mv > 0 && h.value !== null ? h.value / mv : null, costWeight, limitWeight,
+      limitCapacity: cap !== null ? cap - h.invested : null, aboveLimit: cap !== null ? Math.max(0, h.invested - cap) : 0,
+      hardCapacity: isStock ? (s.positionLimits.hardLimitPct / 100) * limitDenominator - h.invested : null,
+      overLimit: isStock && limitWeight !== null && limitWeight * 100 > h.limitPct + 1e-9,
+    };
   }).sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
 
   // ---------- Summary ----------
@@ -256,9 +306,15 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
   const withdrawals = cash.filter((c) => c.kind === "WITHDRAWAL").reduce((a, c) => a + c.amount, 0);
   const sip = computeSip(trades, cashForSeries, assetTypeOf, s, monthKey(asOf));
   const lastSip = sip.months[sip.months.length - 1];
-  let cashBal: number | null = null, cashSource: string | undefined;
-  if (latestSnap?.cash !== undefined) { cashBal = latestSnap.cash; cashSource = `Kite margins (${latestSnap.asOfDate})`; }
-  else if (hasLedger && lastSip?.cashBalance !== null && lastSip?.cashBalance !== undefined) { cashBal = lastSip.cashBalance; cashSource = "Ledger-derived (deposits − net purchases)"; }
+  void lastSip;
+  // ---------- Series (securities sleeve) + broker-cash ledger ----------
+  const ser = buildSeries(trades, d.actions, cashForSeries, book, asOf);
+  const pts = ser.points;
+  const cashPts = pts.length ? cashLedger(trades, cash, pts.map((p) => p.date)) : null;
+  const ledgerCash = cashPts?.length ? cashPts[cashPts.length - 1].cash : null;
+  const cashRes: CashResolution = resolveCash(latestSnap, ledgerCash);
+  const cashBal = cashRes.availableCash;
+  const cashSource = cashRes.source;
   const liquidReserve = holdings.filter((h) => h.assetType === "CASH_EQUIVALENT").reduce((a, h) => a + (h.value ?? 0), 0);
 
   const totalGain = unrealized + realized + divTotal;
@@ -287,9 +343,7 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
   const inception = trades.map((t) => t.date).sort()[0];
   const years = inception ? daysBetween(inception, asOf) / 365 : 0;
 
-  // ---------- Series / TWR ----------
-  const ser = buildSeries(trades, d.actions, cashForSeries, book, asOf);
-  const pts = ser.points;
+  // ---------- TWR ----------
   const monthly = monthlyReturns(pts);
   const calendar = calendarYearReturns(monthly);
   let twr: number | null = null, twrAnn: number | null = null, twrNote = "";
@@ -308,7 +362,33 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
 
   const targetRate = s.targetCagrPct / 100;
   const tp = targetPath(pts, targetRate);
-  const targetSeries = tp.map((t, i) => ({ date: t.date, target: t.target, actual: pts[i].covered ? pts[i].value : null }));
+
+  // ---------- Account level (securities + broker cash), external flows only ----------
+  const acct: AccountPoint[] | null = cashPts ? accountSeries(pts, cashPts) : null;
+  const acctCovered = !!acct && acct.length > 0 && acct.every((p) => p.value !== null);
+  const acctStart = acct?.find((p) => p.value !== null)?.date;
+  let acctTwr: number | null = null, acctTwrAnn: number | null = null;
+  if (acct && acctCovered && acct.length > 1) {
+    acctTwr = acct.reduce((g, p) => g * (1 + (p.dailyReturn ?? 0)), 1) - 1;
+    acctTwrAnn = annualise(acctTwr, daysBetween(acct[0].date, asOf));
+  }
+  // Contribution-adjusted target path at account level: each external deposit compounds at the target rate.
+  let accTarget = 0, prevD: string | undefined;
+  const acctTarget = (acct ?? []).map((p) => {
+    if (prevD) accTarget *= Math.pow(1 + targetRate, daysBetween(prevD, p.date) / 365);
+    accTarget += p.extFlow - p.bankIncome;
+    prevD = p.date;
+    return accTarget;
+  });
+  const targetSeries = tp.map((t, i) => ({ date: t.date, target: t.target, actual: pts[i].covered ? pts[i].value : null, accountTarget: acct ? acctTarget[i] : null, accountActual: acct ? acct[i].value : null, contributions: acct ? acct[i].cumContrib : null }));
+  const firstDeposit = cash.filter((c) => c.kind === "DEPOSIT").map((c) => c.date).sort()[0];
+  const reportedClosing = cashBal !== null && allPriced ? mv + cashBal : null;
+  const bridgeAll: Bridge = valueBridge(acct, pts, cashPts, addDays(pts[0]?.date ?? asOf, -1), asOf, reportedClosing);
+
+  // Equity sleeve (excludes Liquid BeES / cash-equivalents) for attribution of reserve drag.
+  const eqTrades = trades.filter((t) => assetTypeOf(t.symbol) !== "CASH_EQUIVALENT");
+  const eqSer = buildSeries(eqTrades, d.actions, cashForSeries.filter((c) => !c.symbol || assetTypeOf(c.symbol) !== "CASH_EQUIVALENT"), book, asOf);
+  const eqTwr = eqSer.points.length && eqSer.uncoveredDays === 0 ? chainReturn(eqSer.points, addDays(eqSer.points[0].date, -1), asOf).ret : null;
 
   // Gap vs target — valid comparisons only.
   let gap: number | null = null, gapNote = "";
@@ -317,12 +397,17 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
   if (best === null) gapNote = "Annualised return unavailable.";
   else if (daysIn >= 365) { gap = best - targetRate; gapNote = `XIRR ${(best * 100).toFixed(1)}% vs target ${s.targetCagrPct}% (annualised, money-weighted).`; }
   else gapNote = `Only ${daysIn} days of history — annualised comparison would be misleading; compare value against the target reference path instead.`;
-  const tRef = tp.length ? tp[tp.length - 1].target : null;
+  // Reference value: account level (external contributions, cash included) when the ledger exists; else securities level.
+  const useAcct = !!acct && acctTarget.length > 0 && reportedClosing !== null;
+  const tRef = useAcct ? acctTarget[acctTarget.length - 1] : tp.length ? tp[tp.length - 1].target : null;
+  const actualForRef = useAcct ? reportedClosing! : mv;
   let status: PortfolioAnalytics["summary"]["status"] = "Insufficient data", statusDetail = "Need dated transactions and current prices.";
   if (tRef !== null && tRef > 0 && allPriced && trades.length) {
-    const ratio = (mv + divTotal * 0) / tRef - 1;
+    const ratio = actualForRef / tRef - 1;
     status = ratio > 0.05 ? "Ahead" : ratio < -0.05 ? "Behind" : "Near";
-    statusDetail = `Market value is ${(ratio * 100).toFixed(1)}% ${ratio >= 0 ? "above" : "below"} the value your dated net investments would have reached compounding at ${s.targetCagrPct}% (±5% = near).`;
+    statusDetail = useAcct
+      ? `Account value (securities + cash) is ${(ratio * 100).toFixed(1)}% ${ratio >= 0 ? "above" : "below"} what your dated external contributions would be worth compounding at ${s.targetCagrPct}% (±5% = near).`
+      : `Securities value is ${(ratio * 100).toFixed(1)}% ${ratio >= 0 ? "above" : "below"} what your dated net purchases would be worth compounding at ${s.targetCagrPct}% (±5% = near). Import the ledger for the account-level comparison.`;
   }
 
   // ---------- Benchmarks ----------
@@ -443,8 +528,8 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
   for (const h of holdings) {
     if (h.assetType !== "STOCK") continue;
     const f = fundMap.get(h.symbol);
-    if (h.costWeight !== null && h.costWeight * 100 > s.positionLimits.hardLimitPct) flags.push({ symbol: h.symbol, kind: "Position size", severity: "high", detail: `Invested-cost weight ${(h.costWeight * 100).toFixed(1)}% exceeds hard limit ${s.positionLimits.hardLimitPct}%.` });
-    else if (h.overLimit) flags.push({ symbol: h.symbol, kind: "Position size", severity: "medium", detail: `Invested-cost weight ${(h.costWeight! * 100).toFixed(1)}% exceeds ${h.conviction} limit ${h.limitPct}%.` });
+    if (h.limitWeight !== null && h.limitWeight * 100 > s.positionLimits.hardLimitPct) flags.push({ symbol: h.symbol, kind: "Position size", severity: "high", detail: `Invested-cost weight ${(h.limitWeight * 100).toFixed(1)}% of ${DENOM_LABEL[s.positionLimitDenominator]} exceeds hard limit ${s.positionLimits.hardLimitPct}%.` });
+    else if (h.overLimit) flags.push({ symbol: h.symbol, kind: "Position size", severity: "medium", detail: `Invested-cost weight ${(h.limitWeight! * 100).toFixed(1)}% of ${DENOM_LABEL[s.positionLimitDenominator]} exceeds ${h.conviction} limit ${h.limitPct}% (₹${Math.round(h.aboveLimit).toLocaleString("en-IN")} above).` });
     if (h.weight !== null && h.weight * 100 > s.positionLimits.hardLimitPct) flags.push({ symbol: h.symbol, kind: "Market-value concentration", severity: "low", detail: `Market-value weight ${(h.weight * 100).toFixed(1)}% (grown by appreciation — informational, not a sell signal).` });
     if (f?.ttmNetProfit !== undefined && f.ttmNetProfit <= 0) flags.push({ symbol: h.symbol, kind: "Valuation", severity: "medium", detail: "Loss-making (TTM) — P/E not meaningful." });
     else if (f?.pe !== undefined && f.pe > 75) flags.push({ symbol: h.symbol, kind: "Valuation", severity: "medium", detail: `P/E ${f.pe.toFixed(1)} — ${peBand(f.pe)}.` });
@@ -487,6 +572,99 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
 
   const stats = returnStats(portMonthly.map((m) => m.ret!), s.riskFreeRatePct / 100);
 
+  // ---------- V2: standardised metric registry ----------
+  const secStart = pts[0]?.date;
+  const secDays = secStart ? daysBetween(secStart, asOf) : 0;
+  const acctDays = acct?.length ? daysBetween(acct[0].date, asOf) : 0;
+  const liquidSyms = holdings.filter((h) => h.assetType === "CASH_EQUIVALENT").map((h) => h.symbol).join(", ") || "none held";
+  const lastRolling = rollingReturns(monthly, 12).filter((r) => r.ret !== null).pop();
+  const metrics: MetricDef[] = [
+    { id: "accountXirr", label: "Account XIRR (since inception)", value: xAcc, start: firstDeposit, end: asOf, scope: "Whole Zerodha account: securities + broker cash", flows: "External deposits (−), payouts (+), dividends paid to bank (+); terminal = securities value + available cash", annualisation: "XIRR, actual/365" + (acctDays < 365 ? " — history under 1 year, unstable" : ""), fees: FEES_NOTE, dividends: "Included (bank-paid as inflows; ledger-credited via cash)", taxes: TAX_NOTE, cash: "Included — idle cash dilutes this return (cash drag)", liquid: `Included at market value (${liquidSyms})`, note: hasLedger ? undefined : "Requires the funds ledger." },
+    { id: "securitiesXirr", label: "Securities XIRR (since first trade)", value: xSec, start: secStart, end: asOf, scope: "Securities only (stocks, ETFs, MFs, Liquid BeES); broker cash excluded", flows: "Purchases (−), sale proceeds (+), all dividends (+); terminal = securities value", annualisation: "XIRR, actual/365" + (secDays < 365 ? " — history under 1 year, unstable" : ""), fees: FEES_NOTE, dividends: "Included as inflows", taxes: TAX_NOTE, cash: "Excluded", liquid: "Included as a security" },
+    { id: "accountTwr", label: "Portfolio TWR — account (cumulative)", value: acctTwr, start: acct?.[0]?.date, end: asOf, scope: "Securities + broker cash", flows: "Daily sub-periods; external deposits/payouts at start of day; bank-paid dividends as distributions", annualisation: annualisationNote(acctDays), fees: FEES_NOTE, dividends: "Included as income", taxes: TAX_NOTE, cash: "Included (cash earns 0 — creates drag)", liquid: "Included" },
+    { id: "securitiesTwr", label: "Portfolio TWR — invested securities (cumulative)", value: twr, start: secStart, end: asOf, scope: "Securities only", flows: "Daily sub-periods around every purchase/sale (start of day)", annualisation: annualisationNote(secDays), fees: FEES_NOTE, dividends: "Included as income", taxes: TAX_NOTE, cash: "Excluded", liquid: "Included" },
+    { id: "inceptionTwrAnn", label: "Since-inception annualised TWR (securities)", value: twrAnn, start: secStart, end: asOf, scope: "Securities only", flows: "As above", annualisation: secDays >= 365 ? "Geometric annualisation (1+r)^(365/days)−1" : "Withheld: under 1 year", fees: FEES_NOTE, dividends: "Included", taxes: TAX_NOTE, cash: "Excluded", liquid: "Included" },
+    { id: "calendarTwr", label: `Calendar ${asOf.slice(0, 4)} TWR (YTD)`, value: ytd, start: inception && inception > yStart ? inception : yStart, end: asOf, scope: "Securities only", flows: "Daily sub-periods", annualisation: "Not annualised (calendar-year-to-date)", fees: FEES_NOTE, dividends: "Included", taxes: TAX_NOTE, cash: "Excluded", liquid: "Included" },
+    { id: "rolling12Twr", label: "Rolling 12-month TWR (latest)", value: lastRolling?.ret ?? null, end: lastRolling?.key ?? asOf, scope: "Securities only, 12 complete months", flows: "Compounded complete monthly TWRs", annualisation: "12-month period = annual", fees: FEES_NOTE, dividends: "Included", taxes: TAX_NOTE, cash: "Excluded", liquid: "Included" },
+    { id: "absolutePnl", label: "Absolute investment P/L (₹)", value: bridgeAll.available ? bridgeAll.totalInvestmentGain : totalGain, start: secStart, end: asOf, scope: bridgeAll.available ? "Market gain + all dividends/interest − non-trade charges" : "Unrealised + realised + dividends", flows: "Contributions excluded", annualisation: "None (₹ amount)", fees: FEES_NOTE, dividends: "Included", taxes: TAX_NOTE, cash: "Cash itself is not a gain", liquid: "Gains on Liquid BeES included" },
+  ];
+  const differences: CapitalSection["differences"] = [
+    { a: "Account XIRR", b: "Securities XIRR", diff: xAcc !== null && xSec !== null ? xAcc - xSec : null, explanation: "Account XIRR includes idle broker cash (0% return) and is measured from the first deposit; securities XIRR measures only money actually invested. The gap is mostly cash drag." },
+    { a: "Securities XIRR", b: "Securities TWR (annualised)", diff: xSec !== null && twrAnn !== null ? xSec - twrAnn : null, explanation: "Same scope; XIRR weights periods by the money invested, TWR weights each period equally. A positive gap means your contributions happened to arrive before stronger periods (timing), not better stock picking." },
+    { a: "Account TWR", b: "Securities TWR", diff: acctTwr !== null && twr !== null ? acctTwr - twr : null, explanation: "Cumulative. The difference isolates the effect of holding uninvested broker cash." },
+  ];
+
+  // ---------- V2: why ahead / behind (additive, measured decomposition) ----------
+  const blend = benchmarks.find((b) => b.code === "BLEND");
+  const decomp: CapitalSection["decomposition"] = { window: null, terms: [], total: null, note: "" };
+  if (pts.length && twr !== null) {
+    const from = acct?.[0]?.date ?? pts[0].date, days = daysBetween(from, asOf), ann = days >= 365;
+    const conv = (cum: number | null) => (cum === null ? null : ann ? Math.pow(1 + cum, 365 / days) - 1 : cum);
+    const X = xAcc ?? xSec; // annualised
+    const Xp = X === null ? null : ann ? X : Math.pow(1 + X, days / 365) - 1;
+    const A = acctTwr !== null ? conv(acctTwr) : null, S = conv(twr), E = conv(eqTwr);
+    const bCum = blend?.available && blend.cumulative.length ? (blend.cumulative[blend.cumulative.length - 1].value ?? 0) / (blend.cumulative[0].value || 1) - 1 : null;
+    const B = conv(bCum);
+    const T = ann ? targetRate : Math.pow(1 + targetRate, days / 365) - 1;
+    const terms: DecompositionTerm[] = [];
+    const add = (key: string, label: string, v: number | null, evidence: string) => terms.push({ key, label, value: v, evidence });
+    const A_ = A ?? S, E_ = E ?? S;
+    add("timing", "Timing of contributions", Xp !== null && A_ !== null ? Xp - A_ : null, "Money-weighted (XIRR) minus time-weighted return of the same scope.");
+    add("cash", "Cash drag (idle broker cash)", A !== null && S !== null ? A - S : null, A === null ? "Needs the funds ledger." : "Account TWR minus securities TWR.");
+    add("reserve", "Liquid BeES reserve drag", S !== null && E !== null ? S - E : null, "Securities TWR minus equity-only TWR (excluding cash-equivalents).");
+    if (B !== null) {
+      add("selection", "Stock selection, sector & market-cap tilts vs blended benchmark", E_ !== null ? E_ - B : null, "Equity-sleeve TWR minus blended target-mix TRI benchmark.");
+      add("market", "Market conditions (benchmark vs 40% aspiration)", B - T, "Blended benchmark return minus the aspiration over the same window.");
+    } else add("selection", "Equity sleeve vs aspiration (benchmark not imported)", E_ !== null ? E_ - T : null, "Cannot separate market conditions from selection without benchmark TRI data.");
+    const total = Xp !== null ? Xp - T : null;
+    decomp.window = { from, to: asOf, days, annualised: ann };
+    decomp.terms = terms;
+    decomp.total = total;
+    decomp.note = `${ann ? "Annualised" : "Cumulative (window under 1 year; target pro-rated)"} percentage-point contributions. Terms telescope exactly: XIRR − target = timing + cash + reserve + selection + market. Each term is measured, not inferred; small residuals arise only where a component is missing.`;
+  }
+  const stockRows = holdings.filter((h) => h.assetType === "STOCK");
+  const gainOf = (h: HoldingRow) => (h.unrealized ?? 0) + h.realized + h.dividends;
+  const attr = (key: (h: HoldingRow) => string) => {
+    const m = new Map<string, { gain: number; value: number }>();
+    for (const h of stockRows) { const k = key(h); const e = m.get(k) ?? { gain: 0, value: 0 }; e.gain += gainOf(h); e.value += h.value ?? 0; m.set(k, e); }
+    const tg = [...m.values()].reduce((x, e) => x + Math.abs(e.gain), 0) || 1;
+    return [...m].map(([k, e]) => ({ key: k, gain: e.gain, share: e.gain / tg, weight: sv > 0 ? e.value / sv : 0 })).sort((x, y) => y.gain - x.gain);
+  };
+  const posGains = contributions.map((c) => c.gain).filter((g) => g > 0).sort((x, y) => y - x);
+  const totPos = posGains.reduce((x, g) => x + g, 0) || 1;
+  let cumG = 0, half = 0;
+  for (const g of posGains) { cumG += g; half++; if (cumG >= totPos / 2) break; }
+  const byType = Object.fromEntries((["STOCK", "ETF", "MF", "CASH_EQUIVALENT"] as AssetType[]).map((t) => { const hs = holdings.filter((h) => h.assetType === t); return [t, { value: hs.reduce((x, h) => x + (h.value ?? 0), 0), cost: hs.reduce((x, h) => x + h.invested, 0), count: hs.length }]; })) as CapitalSection["measures"]["byType"];
+  // Monthly deployment vs guide
+  const guideTotal = Object.values(s.deploymentGuide).reduce((x, v) => x + v, 0) || 1;
+  const deployment = sip.months.filter((m) => m.inPlan).map((m) => {
+    const byCap: Record<string, number> = {};
+    let sb = 0, ss = 0;
+    for (const t of trades) {
+      if (monthKey(t.date) !== m.month || assetTypeOf(t.symbol) !== "STOCK") continue;
+      const v = t.quantity * t.price + (t.side === "BUY" ? t.charges : -t.charges);
+      if (t.side === "BUY") { sb += v; const c = classifyAt(secMap.get(t.symbol), t.date, s.thresholds).category; byCap[c] = (byCap[c] ?? 0) + v; } else ss += v;
+    }
+    const dev = sb > 0 ? (["Mid", "Small", "Micro", "Nano"] as const).reduce((x, k) => x + Math.abs((byCap[k] ?? 0) / sb - s.deploymentGuide[k] / guideTotal), 0) / 2 : null;
+    return { month: m.month, target: m.target, contribution: m.contribution, parkedInReserve: m.liquidNet, stockBuys: sb, stockSells: ss, byCap, contributionAch: m.target > 0 ? m.contribution / m.target : null, deploymentAch: m.contribution > 0 ? sb / m.contribution : null, allocationAch: dev === null ? null : 1 - dev };
+  });
+  const yearsList = [...new Set(pts.map((p) => p.date.slice(0, 4)))];
+  const bridgeByYear = yearsList.map((y) => valueBridge(acct, pts, cashPts, `${Number(y) - 1}-12-31`, [`${y}-12-31`, asOf].sort()[0], null));
+  const capital: CapitalSection = {
+    measures: { totalMarketValue: cashBal !== null ? mv + cashBal : null, securitiesValue: mv, brokerCash: cashBal, byType, investedTotal: inv, netContributions: hasLedger ? deposits - withdrawals : null, deposits, withdrawals },
+    reserve: { availableCash: cashBal, liquidBees: liquidReserve, combined: (cashBal ?? 0) + liquidReserve, buyingPower: cashRes.buyingPower, collateral: cashRes.collateral, source: cashRes.source, warnings: cashRes.warnings,
+      liquidNote: "Liquid BeES is a liquid ETF (cash-management instrument), not bank cash: selling it settles T+1, its price includes accrued yield, and pledging it gives collateral margin only after a haircut. Buying power shown is the broker's figure." },
+    bridge: bridgeAll, bridgeByYear,
+    account: (acct ?? []).map((p) => ({ date: p.date, value: p.value, securities: p.securities, cash: p.cash, contributions: p.cumContrib, twrIndex: p.twrIndex })),
+    accountTwr: acctTwr, accountTwrAnnualised: acctTwrAnn, equitySleeveTwr: eqTwr,
+    metrics, differences, decomposition: decomp,
+    attributionByCap: attr((h) => h.cap.category), attributionBySector: attr((h) => h.sector),
+    concentrationOfGains: { top1: (posGains[0] ?? 0) / totPos, top3: posGains.slice(0, 3).reduce((x, g) => x + g, 0) / totPos, top5: posGains.slice(0, 5).reduce((x, g) => x + g, 0) / totPos, positions: posGains.length, winnersForHalf: half },
+    deployment,
+    limitDenominator: { kind: s.positionLimitDenominator, label: DENOM_LABEL[s.positionLimitDenominator], value: limitDenominator },
+  };
+  void acctStart; void acctTwrAnn;
+
   return {
     asOf, generatedAt: new Date().toISOString(),
     valuationSource: latestSnap ? { kind: "snapshot", at: latestSnap.takenAt, source: latestSnap.source, quality: latestSnap.quality } : holdings.length ? { kind: "reconstructed", quality: "RECONSTRUCTED" } : { kind: "none", quality: "MISSING" },
@@ -500,7 +678,7 @@ export function analyse(d: PortfolioData, s: Settings, asOf: string): PortfolioA
     },
     series: pts, seriesGaps: ser.gaps, targetSeries, monthly, calendar,
     rolling12: rollingReturns(monthly, 12), rolling36: rollingReturns(monthly, 36),
-    benchmarks, stats, maxDrawdown: maxDrawdown(pts.map((p) => p.twrIndex)), sip,
+    benchmarks, stats, maxDrawdown: maxDrawdown(pts.map((p) => p.twrIndex)), sip, capital,
     allocation: { directEquity, assetTypes, lookThrough, lookThroughCoverage: mv > 0 ? covered / mv : 0, etfs: holdings.filter((h) => h.assetType === "ETF" || h.assetType === "CASH_EQUIVALENT"), mfs: holdings.filter((h) => h.assetType === "MF") },
     sectors, sectorHistory, contributions,
     risk: { concentration: concentration(rh.filter((x) => x.assetType === "STOCK")), stress: stressTest(rh), flags, microNanoPct: sv > 0 ? microNano / sv : 0, liquidity: rh.filter((x) => x.assetType === "STOCK").map((x) => ({ symbol: x.symbol, value: x.value, adtv: x.avgDailyTurnoverInr ?? null, days: daysToLiquidate(x.value, x.avgDailyTurnoverInr) })) },

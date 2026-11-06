@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { generateSample } from "@/lib/sample";
-import { insertMany, put, upsertPrices, purgeSource, audit } from "@/lib/store/db";
+import { insertMany, put, upsertPrices, audit, dataMode, list } from "@/lib/store/db";
 import { invalidate, saveSettings } from "@/lib/server/repo";
 import { todayIST } from "@/lib/engine/dates";
 import { bad, sameOrigin } from "@/lib/server/http";
 
+/** Synthetic sample: ONLY in DATA_MODE=demo (separate demo.db). Never loadable into the live database. */
 export async function POST(req: Request) {
   if (!sameOrigin(req)) return bad("Bad origin", 403);
+  if (dataMode() !== "demo") return bad("Synthetic data can only be loaded in demo mode (npm run demo), which uses a separate database. The live database never accepts it.", 403);
+  if (list("trades").some((t) => (t as { quality?: string }).quality !== "SYNTHETIC")) return bad("Demo database contains non-synthetic records; refusing to mix.", 409);
   const d = generateSample(todayIST());
   insertMany("trades", d.trades); insertMany("cash", d.cash);
   for (const s of d.securities) put("securities", s.symbol, s);
@@ -18,11 +21,4 @@ export async function POST(req: Request) {
   audit("sample.load");
   invalidate();
   return NextResponse.json({ ok: true });
-}
-export async function DELETE(req: Request) {
-  if (!sameOrigin(req)) return bad("Bad origin", 403);
-  const n = purgeSource("SYNTHETIC_SAMPLE");
-  audit("sample.remove", String(n));
-  invalidate();
-  return NextResponse.json({ removed: n });
 }

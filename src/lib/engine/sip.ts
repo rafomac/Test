@@ -67,12 +67,15 @@ export function computeSip(
     const v = t.quantity * t.price + (t.side === "BUY" ? t.charges : -t.charges);
     if (t.side === "BUY") r.buys[at] += v; else r.sells[at] += v;
   }
+  // Zerodha pays dividends to the bank account; only ledger-credited income changes broker cash (V2 fix).
+  const ledgerIncome = new Map<string, number>();
   for (const c of cash) {
     const r = rows.get(monthKey(c.date));
     if (!r) continue;
     if (c.kind === "DEPOSIT") r.deposits += c.amount;
     else if (c.kind === "WITHDRAWAL") r.withdrawals += c.amount;
-    else if (c.kind === "DIVIDEND") r.dividends += c.amount;
+    else if (c.kind === "DIVIDEND") { r.dividends += c.amount; if (c.source === "CONSOLE_LEDGER") ledgerIncome.set(r.month, (ledgerIncome.get(r.month) ?? 0) + c.amount); }
+    else if (c.kind === "INTEREST" && c.source === "CONSOLE_LEDGER") ledgerIncome.set(r.month, (ledgerIncome.get(r.month) ?? 0) + c.amount);
   }
   let cumT = 0, cumA = 0, cashBal = 0;
   const out: SipMonth[] = [];
@@ -84,7 +87,7 @@ export function computeSip(
     r.contribution = hasLedger ? r.deposits - r.withdrawals : totalBuys - totalSells;
     if (hasLedger) {
       const charges = cash.filter((c) => c.kind === "CHARGE" && monthKey(c.date) === m).reduce((s, c) => s + c.amount, 0);
-      cashBal += r.deposits - r.withdrawals - totalBuys + totalSells + r.dividends - charges;
+      cashBal += r.deposits - r.withdrawals - totalBuys + totalSells + (ledgerIncome.get(m) ?? 0) - charges;
       r.cashBalance = cashBal;
     }
     r.target = targetFor(m, settings);

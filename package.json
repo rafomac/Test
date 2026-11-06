@@ -9,7 +9,8 @@
     "start": "next start",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "hash-password": "node scripts/hash-password.mjs"
+    "hash-password": "node scripts/hash-password.mjs",
+    "demo": "DATA_MODE=demo next dev -p 3001"
   },
   "engines": {
     "node": ">=22.13"

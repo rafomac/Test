@@ -87,3 +87,30 @@ export const INDEX_ETF_LOOKTHROUGH: { re: RegExp; lt: Partial<Record<CapCategory
   { re: /^(MID150BEES|MIDCAPETF|MIDCAPIETF|MIDQ50ADD)$/i, lt: { Mid: 1 }, note: "Nifty Midcap 150 = SEBI mid-cap universe (approx.)" },
   { re: /^(SMALLCAP|HDFCSML250|SML250|MOSMALL250|SMALL250)$/i, lt: { Small: 1 }, note: "Nifty Smallcap 250 = official small-caps (approx.)" },
 ];
+
+/**
+ * Classification effective on `date`, using the security's capHistory when present
+ * (history entries apply from their date onward). Falls back to the current fields.
+ */
+export function classifyAt(sec: Security | undefined, date: string, t: MarketCapThresholds): Classification {
+  if (!sec) return classify(undefined, t);
+  const h = (sec.capHistory ?? []).filter((x) => x.date <= date).sort((a, b) => (a.date < b.date ? -1 : 1)).pop();
+  if (!h) {
+    // Before the first recorded classification, use the earliest known record rather than today's.
+    const first = [...(sec.capHistory ?? [])].sort((a, b) => (a.date < b.date ? -1 : 1))[0];
+    return classify(first ? { ...sec, marketCapCr: first.marketCapCr, amfiRank: first.amfiRank, amfiCategory: first.amfiCategory } : sec, t);
+  }
+  return classify({ ...sec, marketCapCr: h.marketCapCr ?? sec.marketCapCr, amfiRank: h.amfiRank, amfiCategory: h.amfiCategory }, t);
+}
+
+/** Append a capHistory entry when market cap / AMFI data changes (used by imports and edits). */
+export function withCapHistory(prev: Security | undefined, next: Security, date: string, source: string): Security {
+  const changed = !prev || prev.marketCapCr !== next.marketCapCr || prev.amfiRank !== next.amfiRank || prev.amfiCategory !== next.amfiCategory;
+  const hist = [...(prev?.capHistory ?? next.capHistory ?? [])];
+  if (changed && (next.marketCapCr !== undefined || next.amfiRank !== undefined)) {
+    const entry = { date, marketCapCr: next.marketCapCr, amfiRank: next.amfiRank, amfiCategory: next.amfiCategory, source };
+    const i = hist.findIndex((h) => h.date === date);
+    if (i >= 0) hist[i] = entry; else hist.push(entry);
+  }
+  return { ...next, capHistory: hist.sort((a, b) => (a.date < b.date ? -1 : 1)) };
+}

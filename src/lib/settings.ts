@@ -28,6 +28,22 @@ export const DEFAULT_SETTINGS: Settings = {
   riskFreeRatePct: 6.5,
   liquidSymbols: ["LIQUIDBEES", "LIQUIDCASE", "LIQUIDETF", "LIQUIDIETF", "LIQUID1"],
   theme: "system",
+  positionLimitDenominator: "directEquityCost",
+  deploymentGuide: { Mid: 40_000, Small: 90_000, Micro: 50_000, Nano: 20_000 },
+  alerts: {
+    enabled: {},
+    staleSnapshotDays: 3, stalePriceDays: 5, staleFundamentalsDays: 120,
+    revenueDecelPP: 10, dilutionPct: 5, valuationChangePct: 30, scoreDropPts: 10, concentrationPct: 15, liquidityDropPct: 50,
+  },
+  tax: {
+    residency: "NRI",
+    equityLtcgMonths: 12,
+    // Left blank on purpose: rates must be verified by the user for their status and year.
+    stcgRatePct: null, ltcgRatePct: null, ltcgExemption: null,
+    slabTaxedSymbols: ["LIQUIDBEES", "LIQUIDCASE", "LIQUIDETF", "LIQUIDIETF", "LIQUID1"],
+    rulesAsOf: "",
+  },
+  viewMode: "simple",
 };
 
 export function mergeSettings(s: Partial<Settings> | undefined): Settings {
@@ -38,5 +54,8 @@ export function mergeSettings(s: Partial<Settings> | undefined): Settings {
     positionLimits: { ...DEFAULT_SETTINGS.positionLimits, ...(s?.positionLimits ?? {}) },
     targetAllocation: { ...DEFAULT_SETTINGS.targetAllocation, ...(s?.targetAllocation ?? {}) },
     scoreWeights: { ...DEFAULT_SETTINGS.scoreWeights, ...(s?.scoreWeights ?? {}) },
+    deploymentGuide: { ...DEFAULT_SETTINGS.deploymentGuide, ...(s?.deploymentGuide ?? {}) },
+    alerts: { ...DEFAULT_SETTINGS.alerts, ...(s?.alerts ?? {}), enabled: { ...(s?.alerts?.enabled ?? {}) } },
+    tax: { ...DEFAULT_SETTINGS.tax, ...(s?.tax ?? {}) },
   };
 }

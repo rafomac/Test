@@ -166,7 +166,7 @@ export function generateSample(asOf: string, startMonth = "2024-11", seed = 42):
       symbol: s, assetType: securities.find((x) => x.symbol === s)!.assetType, quantity: q,
       averagePrice: (cost.get(s) ?? 0) / (bq.get(s) ?? 1), lastPrice: priceOn(s, asOf)!,
     })),
-    cash: Math.round(bal * 100) / 100,
+    funds: { cash: Math.round(bal * 100) / 100, net: Math.round(bal * 100) / 100, collateral: 0 },
   };
   return { trades, cash, actions: [], securities, fundamentals, research, snapshots: [snapshot], prices };
 }

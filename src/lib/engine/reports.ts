@@ -4,7 +4,7 @@ import { addDays, daysBetween, monthEnd, monthKey } from "./dates";
 import { buildPriceBook, chainReturn } from "./series";
 import { runLedger } from "./positions";
 import { xirr, annualise } from "./xirr";
-import { classify, inferAssetType } from "./classify";
+import { classifyAt, inferAssetType } from "./classify";
 import type { Settings } from "../types";
 
 export type RangeKey = "all" | "ytd" | "prev-year" | "12m" | "6m" | "3m" | "30d" | "custom";
@@ -29,6 +29,9 @@ export interface PeriodMetrics {
   netFlows: number; dividends: number; contributions: number | null;
   pnl: number | null; twr: number | null; twrComplete: boolean;
   mwr: number | null; mwrAnnualised: boolean; days: number;
+  /** Account-level (securities + cash, external flows) selected-period XIRR, de-annualised under 1 year. */
+  accountMwr: number | null;
+  accountStart: number | null; accountEnd: number | null; externalFlows: number;
   note?: string;
 }
 
@@ -53,9 +56,24 @@ export function periodMetrics(a: PortfolioAnalytics, from: string, to: string, l
     // Show the de-annualised period figure for < 1 year to avoid misleading annualisation.
     mwr = x === null ? null : days >= 365 ? x : Math.pow(1 + x, days / 365) - 1;
   }
+  // Account-level period XIRR from the daily account series (external flows only).
+  const ac = a.capital.account;
+  const a0 = [...ac].reverse().find((p) => p.date <= from), a1 = [...ac].reverse().find((p) => p.date <= to);
+  let accountMwr: number | null = null, externalFlows = 0;
+  const startA = a0 ? a0.value : ac.length && ac[0].date > from ? 0 : null;
+  if (ac.length && startA !== null && a1?.value !== null && a1) {
+    const base = a0?.contributions ?? 0;
+    const fl: { date: string; amount: number }[] = [{ date: a0?.date ?? from, amount: -startA }];
+    let prevC = base;
+    for (const p of ac.filter((p) => p.date > from && p.date <= to)) { const e = p.contributions - prevC; prevC = p.contributions; if (e) fl.push({ date: p.date, amount: -e }); externalFlows += e; }
+    fl.push({ date: a1.date, amount: a1.value! });
+    const x = xirr(fl);
+    accountMwr = x === null ? null : days >= 365 ? x : Math.pow(1 + x, days / 365) - 1;
+  }
   return {
     from, to, label, startValue: sv, endValue: ev, netFlows, dividends, contributions, pnl,
     twr: c.ret, twrComplete: c.complete, mwr, mwrAnnualised: days >= 365, days,
+    accountMwr, accountStart: startA, accountEnd: a1?.value ?? null, externalFlows,
     note: !pts.length ? "No valuation history." : c.complete ? undefined : "Price history incomplete for part of this period.",
   };
 }
@@ -86,7 +104,7 @@ function weightsAt(d: PortfolioData, s: Settings, date: string, by: "cap" | "sec
     const at = sec?.assetType ?? inferAssetType(p.symbol, "", s.liquidSymbols);
     if (at !== "STOCK") continue;
     const px = book.get(p.symbol, date); if (px === undefined) continue;
-    const k = by === "cap" ? classify(sec ?? { assetType: "STOCK" }, s.thresholds).category : sec?.sector ?? "Unclassified";
+    const k = by === "cap" ? classifyAt(sec, date, s.thresholds).category : sec?.sector ?? "Unclassified";
     out[k] = (out[k] ?? 0) + p.quantity * px; tot += p.quantity * px;
   }
   for (const k of Object.keys(out)) out[k] /= tot || 1;
@@ -156,7 +174,7 @@ export function annualReport(a: PortfolioAnalytics, d: PortfolioData, s: Setting
     const flows = d.trades.filter((t) => t.symbol === sym && t.date > from && t.date <= to).reduce((acc, t) => acc + (t.side === "BUY" ? t.quantity * t.price + t.charges : -(t.quantity * t.price - t.charges)), 0);
     const div = d.cash.filter((c) => c.kind === "DIVIDEND" && c.symbol === sym && c.date > from && c.date <= to).reduce((x, c) => x + c.amount, 0);
     const g = q1 * (p1 ?? 0) - q0 * (p0 ?? 0) - flows + div;
-    const sk = sec?.sector ?? "Unclassified", ck = classify(sec ?? { assetType: "STOCK" }, s.thresholds).category;
+    const sk = sec?.sector ?? "Unclassified", ck = classifyAt(sec, to, s.thresholds).category;
     sectorGain[sk] = (sectorGain[sk] ?? 0) + g; capGain[ck] = (capGain[ck] ?? 0) + g;
   }
   const benchmarks = a.benchmarks.filter((b) => b.available).map((b) => {

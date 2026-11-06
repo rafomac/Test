@@ -1,5 +1,5 @@
 import "server-only";
-import { audit, getDb, insertMany, kvGet, kvSet, list, listPrices, logImport, put, upsertPrices } from "../store/db";
+import { syntheticInventory, audit, getDb, insertMany, kvGet, kvSet, list, listPrices, logImport, put, upsertPrices } from "../store/db";
 import type { CashEntry, CorporateAction, Fundamentals, HoldingsSnapshot, ImportLog, ResearchEntry, Security, Settings, Trade } from "../types";
 import { mergeSettings } from "../settings";
 import { analyse, type PortfolioAnalytics, type PortfolioData } from "../engine/portfolio";
@@ -8,7 +8,7 @@ import {
   parseAmfi, parseCorporateActions, parseDeposits, parseDividends, parseFundamentals, parseHoldings, parseLedger, parseMfTradebook,
   parsePrices, parseSecurities, parseTradebook, type ImportKind,
 } from "../import/zerodha";
-import { inferAssetType } from "../engine/classify";
+import { inferAssetType, withCapHistory } from "../engine/classify";
 
 export function getSettings(): Settings {
   const raw = kvGet("settings");
@@ -48,7 +48,7 @@ export function getAnalytics(asOf = todayIST()): PortfolioAnalytics {
 }
 
 export function hasSynthetic(): boolean {
-  return list<HoldingsSnapshot>("snapshots").some((x) => x.quality === "SYNTHETIC") || list<Trade>("trades").some((t) => t.quality === "SYNTHETIC");
+  return syntheticInventory().total > 0;
 }
 
 export interface ImportOutcome extends ImportLog { conflicts: number }
@@ -103,7 +103,7 @@ export function importFile(kind: ImportKind, text: string, fileName: string, opt
       for (const sec of r.records) {
         const ex = existing.get(sec.symbol);
         const merged = { ...ex, ...Object.fromEntries(Object.entries(sec).filter(([, v]) => v !== undefined)) } as Security;
-        put("securities", sec.symbol, merged);
+        put("securities", sec.symbol, withCapHistory(ex, merged, merged.marketCapAsOf ?? todayIST(), "Security master import"));
       }
       imported = r.records.length;
       break;
@@ -118,7 +118,7 @@ export function importFile(kind: ImportKind, text: string, fileName: string, opt
       for (const sec of secs) {
         const m = (sec.isin && byIsin.get(sec.isin)) || bySym.get(sec.symbol);
         if (!m) continue;
-        put("securities", sec.symbol, { ...sec, amfiRank: m.rank, amfiCategory: m.category, amfiListDate: listDate, updatedAt: new Date().toISOString() });
+        put("securities", sec.symbol, withCapHistory(sec, { ...sec, amfiRank: m.rank, amfiCategory: m.category, amfiListDate: listDate, updatedAt: new Date().toISOString() }, listDate, "AMFI list"));
         imported++;
       }
       kvSet("amfi_list", JSON.stringify({ date: listDate, rows: r.records.length }));

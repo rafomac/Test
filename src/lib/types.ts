@@ -38,6 +38,19 @@ export interface Security {
   amfiListDate?: string;
   /** For ETFs/MFs: look-through category weights if known (fractions summing to 1). */
   lookThrough?: Partial<Record<CapCategory | "Cash" | "Debt" | "Other", number>>;
+  /**
+   * Classification history: each entry records the market cap / AMFI rank effective FROM `date`.
+   * Past allocations use the entry effective at that date, so reclassification never rewrites history.
+   */
+  capHistory?: { date: string; marketCapCr?: number; amfiRank?: number; amfiCategory?: "Large" | "Mid" | "Small"; source: string }[];
+  /** Liquidity / listing metadata (optional, imported or entered). */
+  freeFloatPct?: number;
+  isSME?: boolean;
+  lotSize?: number;
+  deliveryPct?: number;
+  bidAskSpreadPct?: number;
+  circuitHits90d?: number;
+  suspensions?: string[];
   source: DataSource;
   updatedAt: string;
 }
@@ -133,8 +146,26 @@ export interface HoldingsSnapshot {
   source: DataSource;
   quality: DataQuality;
   items: SnapshotItem[];
-  /** Available equity cash from Kite margins (net available), if fetched. */
+  /**
+   * Broker cash. V1 stored margins.equity.net here, which INCLUDES collateral margin
+   * (e.g. pledged Liquid BeES) and could double-count the reserve. V2 stores `funds` instead and
+   * keeps `cash` only for snapshots created before the fix (treated as legacy, flagged).
+   */
   cash?: number;
+  funds?: BrokerFunds;
+}
+
+/** Kite /user/margins equity segment, stored verbatim (authoritative for buying power). */
+export interface BrokerFunds {
+  /** available.cash — ledger cash balance (excludes collateral). Used as "Zerodha available cash". */
+  cash: number;
+  /** available.live_balance — cash after today's utilisation. */
+  liveBalance?: number;
+  /** available.collateral — margin from pledged securities (e.g. Liquid BeES). NOT cash. */
+  collateral?: number;
+  /** net — total margin available for trading (broker-authoritative buying power, incl. collateral). */
+  net?: number;
+  openingBalance?: number;
 }
 
 export type Conviction = "Research" | "Standard" | "High" | "Exceptional";
@@ -188,10 +219,65 @@ export interface Fundamentals {
   /** Promoter holding history keyed by quarter "2025Q4" -> %. */
   promoterHistory?: Record<string, number>;
   governanceFlags?: string[];
+  /** Factual governance events with source (auditor change, pledge, preferential allotment, penalty…). */
+  governanceEvents?: GovernanceEvent[];
+  /** Generic annual series: metric -> FY -> value. e.g. ocf, fcf, debt, opm, npm, roce, pe, shares (crore), promoter_shares. */
+  annualSeries?: Record<string, Record<string, number>>;
+  /** Quarterly promoter shares (crore) to tell dilution from sales. */
+  promoterSharesHistory?: Record<string, number>;
+  totalSharesHistory?: Record<string, number>;
   website?: string;
   websiteQuality?: 0 | 1 | 2 | 3; // 0 none/broken .. 3 professional
   socials?: Socials[];
 }
+
+export interface GovernanceEvent {
+  date: string;
+  type: "Auditor resignation" | "Auditor change" | "Pledge created" | "Pledge increased" | "Pledge released" | "Promoter sale" | "Promoter purchase" | "Preferential allotment" | "QIP / rights" | "Related-party transaction" | "Regulatory action" | "Controversy" | "Other";
+  description: string;
+  source: string; // URL or filing reference
+}
+
+export type PipelineStage =
+  | "Discovery" | "Screening" | "Research" | "Watchlist" | "Initial position" | "Monitoring"
+  | "Reassess valuation" | "Conviction increased" | "Adding capital" | "Long-term hold" | "Thesis review" | "Exited";
+
+export const PIPELINE_STAGES: PipelineStage[] = ["Discovery", "Screening", "Research", "Watchlist", "Initial position", "Monitoring", "Reassess valuation", "Conviction increased", "Adding capital", "Long-term hold", "Thesis review", "Exited"];
+
+export interface ValuationScenario {
+  name: "Bear" | "Base" | "Bull";
+  revenueGrowthPct: number; // annual
+  netMarginPct: number; // terminal
+  dilutionPct: number; // annual share dilution
+  exitPe: number;
+  years: number;
+}
+
+export interface JournalEntry {
+  id: string;
+  symbol: string;
+  date: string;
+  amount: number;
+  kind: "Initial" | "Addition" | "Trim" | "Exit";
+  reason: string;
+  evidence?: string;
+  valuation?: string;
+  conviction?: Conviction;
+  expectedGrowth?: string;
+  risks?: string;
+  holdingPeriod?: string;
+  addConditions?: string;
+  exitConditions?: string;
+  /** For additions: what drove the decision. */
+  basis?: ("Improved fundamentals" | "Lower valuation" | "Temporary correction" | "New business opportunity" | "Increased conviction" | "Allocation adjustment")[];
+  priceAtEntry?: number;
+  peAtEntry?: number;
+  revenueTtmAtEntry?: number;
+  researchScoreAtEntry?: number | null;
+  createdAt: string;
+}
+
+export interface AlertState { id: string; status: "acknowledged" | "snoozed"; until?: string; at: string }
 
 export type SlowdownCause = "Temporary" | "Cyclical" | "Structural" | "Company-specific" | "Unexplained" | "Not applicable";
 
@@ -211,6 +297,19 @@ export interface ResearchEntry {
   lastReviewed?: string;
   nextReview?: string;
   updatedAt: string;
+  // ---- V2 pipeline & thesis ----
+  stage?: PipelineStage;
+  stageHistory?: { stage: PipelineStage; date: string; note?: string }[];
+  discoveryDate?: string;
+  researchStartDate?: string;
+  initialScore?: number;
+  valuationAssumptions?: string;
+  invalidation?: string;
+  scenarios?: ValuationScenario[];
+  /** Forward-looking assessment (estimates, not facts). */
+  futureGrowth?: Partial<Record<"marketOpportunity" | "moat" | "capacity" | "newProducts" | "newMarkets" | "customerConcentration" | "capitalNeeds" | "execution" | "dilutionRisk" | "cashRunway", { rating?: number; note?: string }>>;
+  /** Score snapshots for deterioration alerts. */
+  scoreHistory?: { date: string; score: number | null; completeness: number }[];
 }
 
 export type ScoreCategory =
@@ -261,6 +360,47 @@ export interface Settings {
   riskFreeRatePct: number;
   liquidSymbols: string[];
   theme: "dark" | "light" | "system";
+  /** Denominator for cost-based position limits. Stored on each compliance snapshot. */
+  positionLimitDenominator: "directEquityCost" | "totalInvestedCost" | "netContributions";
+  /** Monthly guide split of the contribution across caps (₹). */
+  deploymentGuide: Record<"Mid" | "Small" | "Micro" | "Nano", number>;
+  alerts: AlertConfig;
+  tax: TaxConfig;
+  viewMode: "simple" | "advanced";
+}
+
+export interface AlertConfig {
+  enabled: Record<string, boolean>;
+  staleSnapshotDays: number;
+  stalePriceDays: number;
+  staleFundamentalsDays: number;
+  revenueDecelPP: number; // alert if latest YoY < 3Y CAGR by this many pp
+  dilutionPct: number; // share count growth threshold
+  valuationChangePct: number;
+  scoreDropPts: number;
+  concentrationPct: number; // market-value weight threshold
+  liquidityDropPct: number;
+}
+
+export interface TaxConfig {
+  residency: "NRI" | "Resident";
+  equityLtcgMonths: number;
+  /** Indicative rates — user must verify; not authoritative. */
+  stcgRatePct: number | null;
+  ltcgRatePct: number | null;
+  ltcgExemption: number | null;
+  /** Symbols taxed as specified mutual funds / debt (gains at slab, no LTCG). Liquid BeES by default. */
+  slabTaxedSymbols: string[];
+  rulesAsOf: string;
+}
+
+export interface ComplianceSnapshot {
+  id: string;
+  date: string;
+  denominator: Settings["positionLimitDenominator"];
+  denominatorValue: number;
+  limits: PositionLimits;
+  rows: { symbol: string; cost: number; weight: number; limitPct: number; conviction: Conviction; over: boolean }[];
 }
 
 export interface ImportLog {
