@@ -6,7 +6,7 @@ import { analyse, type PortfolioAnalytics, type PortfolioData } from "../engine/
 import { todayIST } from "../engine/dates";
 import {
   parseAmfi, parseCorporateActions, parseDeposits, parseDividends, parseFundamentals, parseHoldings, parseLedger, parseMfTradebook,
-  parsePrices, parseSecurities, parseTradebook, type ImportKind,
+  parsePrices, parseSecurities, parseTradebook, parseGovernanceEvents, type ImportKind,
 } from "../import/zerodha";
 import { inferAssetType, withCapHistory } from "../engine/classify";
 
@@ -125,10 +125,26 @@ export function importFile(kind: ImportKind, text: string, fileName: string, opt
       warnings.push(`${imported} of your securities matched the AMFI list (${r.records.length} rows).`);
       break;
     }
+    case "governance_events": {
+      const r = parseGovernanceEvents(text);
+      rowsRead = r.rowsRead; skipped = r.skipped.length; warnings = [...r.warnings, ...r.skipped.slice(0, 10).map((x) => `Row ${x.row}: ${x.reason}`)];
+      const fm = new Map(list<Fundamentals>("fundamentals").map((f) => [f.symbol, f]));
+      for (const { symbol, event } of r.records) {
+        const f = fm.get(symbol) ?? { symbol, asOf: event.date, source: "Governance events import" };
+        const ev = f.governanceEvents ?? [];
+        if (!ev.some((e) => e.date === event.date && e.type === event.type && e.description === event.description)) { ev.push(event); imported++; } else duplicates++;
+        f.governanceEvents = ev;
+        fm.set(symbol, f);
+        put("fundamentals", symbol, f);
+      }
+      break;
+    }
     case "fundamentals": {
       const r = parseFundamentals(text);
       rowsRead = r.rowsRead; skipped = r.skipped.length; warnings = r.warnings;
-      for (const f of r.records) put("fundamentals", f.symbol, f);
+      const existing = new Map(list<Fundamentals>("fundamentals").map((f) => [f.symbol, f]));
+      // Keep governance events across fundamentals refreshes; keep previous P/E for valuation-change alerts.
+      for (const f of r.records) { const ex = existing.get(f.symbol); put("fundamentals", f.symbol, { ...f, governanceEvents: ex?.governanceEvents, previous: ex ? { asOf: ex.asOf, pe: ex.pe, ttmRevenue: ex.ttmRevenue, promoterPledgePctOfPromoter: ex.promoterPledgePctOfPromoter, promoterPledgePctOfTotal: ex.promoterPledgePctOfTotal, debt: ex.totalDebtCr } : undefined }); }
       imported = r.records.length;
       break;
     }

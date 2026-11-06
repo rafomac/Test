@@ -69,6 +69,8 @@ export interface Trade {
   /** Brokerage + STT + exchange + GST + SEBI + stamp duty, if known. */
   charges: number;
   chargesKnown: boolean;
+  /** Optional split from contract notes: brokerage, stt, exchange, gst, stamp, sebi, other. */
+  chargesBreakdown?: Record<string, number>;
   tradeId?: string;
   orderId?: string;
   source: DataSource;
@@ -226,6 +228,8 @@ export interface Fundamentals {
   /** Quarterly promoter shares (crore) to tell dilution from sales. */
   promoterSharesHistory?: Record<string, number>;
   totalSharesHistory?: Record<string, number>;
+  /** Values from the previous fundamentals import (for change alerts). */
+  previous?: { asOf: string; pe?: number; ttmRevenue?: number; promoterPledgePctOfPromoter?: number; promoterPledgePctOfTotal?: number; debt?: number };
   website?: string;
   websiteQuality?: 0 | 1 | 2 | 3; // 0 none/broken .. 3 professional
   socials?: Socials[];

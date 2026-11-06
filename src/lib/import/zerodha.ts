@@ -6,7 +6,7 @@
  */
 import Papa from "papaparse";
 import { parseDate } from "../engine/dates";
-import type { CashEntry, CashKind, CorporateAction, DataSource, Fundamentals, PricePoint, Security, SnapshotItem, Trade } from "../types";
+import type { GovernanceEvent, CashEntry, CashKind, CorporateAction, DataSource, Fundamentals, PricePoint, Security, SnapshotItem, Trade } from "../types";
 import { inferAssetType } from "../engine/classify";
 
 export type ImportKind =
@@ -20,7 +20,8 @@ export type ImportKind =
   | "securities"
   | "fundamentals"
   | "amfi"
-  | "deposits";
+  | "deposits"
+  | "governance_events";
 
 export interface ParseResult<T> {
   records: T[];
@@ -85,7 +86,7 @@ export function parseTradebook(text: string, source: DataSource = "CONSOLE_TRADE
   const { header, rows, headerRow } = tableFromCsv(text, [A.symbol, A.date, A.side, A.qty, A.price], 4);
   const out: ParseResult<Trade> = { records: [], rowsRead: rows.length, skipped: [], warnings: [], detectedColumns: header };
   if (headerRow < 0) { out.warnings.push("Could not find a tradebook header (expected symbol, trade_date, trade_type, quantity, price)."); return out; }
-  const hasCharges = header.some((h) => A.charges.map(norm).includes(norm(h)));
+  const hasCharges = header.some((h) => [...A.charges, "brokerage", "stt", "stamp duty"].map(norm).includes(norm(h)));
   if (!hasCharges) out.warnings.push("Tradebook has no charges column: brokerage/STT/GST/stamp duty are NOT in cost basis. Import ledger or contract-note charges to include them.");
   rows.forEach((r, i) => {
     const seg = pick(r, A.segment);
@@ -98,12 +99,15 @@ export function parseTradebook(text: string, source: DataSource = "CONSOLE_TRADE
     if (!symbol || !date || !sideRaw || qty === null || price === null) { out.skipped.push({ row: i + headerRow + 2, reason: "Missing symbol/date/type/quantity/price" }); return; }
     const side = sideRaw.startsWith("b") ? "BUY" : sideRaw.startsWith("s") ? "SELL" : null;
     if (!side) { out.skipped.push({ row: i + headerRow + 2, reason: `Unknown trade type "${sideRaw}"` }); return; }
-    const charges = num(pick(r, A.charges));
+    const bd: Record<string, number> = {};
+    for (const [k, al] of [["brokerage", ["brokerage"]], ["stt", ["stt", "stt/ctt"]], ["exchange", ["exchange charges", "exchange_charges", "exchange txn charges", "transaction charges"]], ["gst", ["gst", "igst"]], ["stamp", ["stamp duty", "stamp_duty"]], ["sebi", ["sebi fees", "sebi turnover fees", "sebi_fees"]], ["other", ["other charges", "dp charges"]]] as [string, string[]][]) { const v = num(pick(r, al)); if (v !== null) bd[k] = v; }
+    const bdSum = Object.values(bd).reduce((s2, v) => s2 + v, 0);
+    const charges = num(pick(r, A.charges)) ?? (Object.keys(bd).length ? bdSum : null);
     const tradeId = pick(r, A.tradeId);
     out.records.push({
       id: tradeId ? `T-${pick(r, A.exchange) ?? ""}-${tradeId}` : `T-${symbol}-${date}-${side}-${qty}-${price}-${i}`,
       date, symbol, isin: pick(r, A.isin), exchange: pick(r, A.exchange), side, quantity: Math.abs(qty), price,
-      charges: charges ?? 0, chargesKnown: charges !== null, tradeId, orderId: pick(r, A.orderId), source, quality: "VERIFIED",
+      charges: charges ?? 0, chargesKnown: charges !== null, chargesBreakdown: Object.keys(bd).length ? bd : undefined, tradeId, orderId: pick(r, A.orderId), source, quality: "VERIFIED",
     });
   });
   return out;
@@ -286,6 +290,7 @@ export function parseFundamentals(text: string): ParseResult<Fundamentals> {
     if (!symbol) { out.skipped.push({ row: i + 2, reason: "No symbol" }); return; }
     const f: Fundamentals = { symbol, asOf: parseDate(pick(r, ["as_of", "asof", "date"])) ?? new Date().toISOString().slice(0, 10), source: pick(r, ["source"]) ?? "CSV import (source not stated)" };
     const rev: Record<string, number> = {}, prof: Record<string, number> = {}, prom: Record<string, number> = {}, q: Record<string, number> = {};
+    const series: Record<string, Record<string, number>> = {}, ps: Record<string, number> = {}, tsh: Record<string, number> = {};
     for (const [k, v] of Object.entries(r)) {
       const n = num(v);
       if (n === null) continue;
@@ -293,7 +298,14 @@ export function parseFundamentals(text: string): ParseResult<Fundamentals> {
       m = k.match(/^(?:np|profit|net_profit)_?(FY\d{4})$/i); if (m) prof[m[1].toUpperCase()] = n;
       m = k.match(/^promoter_?(\d{4}Q[1-4])$/i); if (m) prom[m[1].toUpperCase()] = n;
       m = k.match(/^revq_?(\d{4}Q[1-4])$/i); if (m) q[m[1].toUpperCase()] = n;
+      m = k.match(/^promoter_shares_?(\d{4}Q[1-4])$/i); if (m) { ps[m[1].toUpperCase()] = n; continue; }
+      m = k.match(/^total_shares_?(\d{4}Q[1-4])$/i); if (m) { tsh[m[1].toUpperCase()] = n; continue; }
+      m = k.match(/^([a-z][a-z0-9_]*?)_(FY\d{4})$/i);
+      if (m && !/^(rev|revenue|np|profit|net_profit)$/i.test(m[1])) { const met = m[1].toLowerCase(); (series[met] ??= {})[m[2].toUpperCase()] = n; }
     }
+    if (Object.keys(series).length) f.annualSeries = series;
+    if (Object.keys(ps).length) f.promoterSharesHistory = ps;
+    if (Object.keys(tsh).length) f.totalSharesHistory = tsh;
     if (Object.keys(rev).length) f.revenueAnnual = rev;
     if (Object.keys(prof).length) f.netProfitAnnual = prof;
     if (Object.keys(prom).length) f.promoterHistory = prom;
@@ -318,10 +330,26 @@ export function parseFundamentals(text: string): ParseResult<Fundamentals> {
   return out;
 }
 
+/** Governance events: symbol, date, type, description, source (URL / filing reference required). */
+export function parseGovernanceEvents(text: string): ParseResult<{ symbol: string; event: GovernanceEvent }> {
+  const { header, rows } = tableFromCsv(text, [A.symbol, ["date"], ["type"], ["description"]], 3);
+  const out: ParseResult<{ symbol: string; event: GovernanceEvent }> = { records: [], rowsRead: rows.length, skipped: [], warnings: [], detectedColumns: header };
+  const TYPES: GovernanceEvent["type"][] = ["Auditor resignation", "Auditor change", "Pledge created", "Pledge increased", "Pledge released", "Promoter sale", "Promoter purchase", "Preferential allotment", "QIP / rights", "Related-party transaction", "Regulatory action", "Controversy", "Other"];
+  rows.forEach((r, i) => {
+    const symbol = pick(r, A.symbol)?.toUpperCase(), date = parseDate(pick(r, ["date"])), typeRaw = pick(r, ["type"]) ?? "", source = pick(r, ["source"]);
+    const type = TYPES.find((t) => t.toLowerCase() === typeRaw.toLowerCase()) ?? "Other";
+    if (!symbol || !date) { out.skipped.push({ row: i + 2, reason: "Missing symbol/date" }); return; }
+    if (!source) { out.skipped.push({ row: i + 2, reason: "Source required for factual governance events" }); return; }
+    out.records.push({ symbol, event: { date, type, description: pick(r, ["description"]) ?? "", source } });
+  });
+  return out;
+}
+
 export const TEMPLATES: Record<string, string> = {
+  governance_events: "symbol,date,type,description,source\nABC,2026-08-14,Auditor resignation,Statutory auditor resigned citing …,https://www.bseindia.com/…\n",
   deposits: "date,amount,type,note\n2026-01-05,200000,DEPOSIT,January SIP\n",
   prices: "symbol,date,close,volume\nIDX:NIFTY_SMALLCAP_250_TRI,2026-01-01,0,\n",
   corporate_actions: "symbol,ex_date,kind,ratio_from,ratio_to,new_symbol,cost_allocation_pct,notes\nABC,2026-03-15,SPLIT,1,5,,,Face value 10 -> 2\n",
   securities: "symbol,name,isin,asset_type,sector,industry,market_cap_cr,market_cap_as_of\n",
-  fundamentals: "symbol,as_of,source,rev_FY2021,rev_FY2022,rev_FY2023,rev_FY2024,rev_FY2025,rev_FY2026,ttm_revenue,ttm_net_profit,pe,roce,roe,debt_equity,interest_coverage,ocf,fcf,op_margin,net_margin,ev_ebitda,ps,pb,promoter_pct,pledge_pct_of_promoter,promoter_2025Q3,promoter_2026Q2,website,website_quality\n",
+  fundamentals: "symbol,as_of,source,ocf_FY2025,ocf_FY2026,fcf_FY2026,debt_FY2025,debt_FY2026,opm_FY2026,roce_FY2026,pe_FY2026,shares_FY2025,shares_FY2026,promoter_shares_2026Q2,total_shares_2026Q2,rev_FY2021,rev_FY2022,rev_FY2023,rev_FY2024,rev_FY2025,rev_FY2026,ttm_revenue,ttm_net_profit,pe,roce,roe,debt_equity,interest_coverage,ocf,fcf,op_margin,net_margin,ev_ebitda,ps,pb,promoter_pct,pledge_pct_of_promoter,promoter_2025Q3,promoter_2026Q2,website,website_quality\n",
 };

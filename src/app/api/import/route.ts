@@ -5,7 +5,7 @@ import type { ImportKind } from "@/lib/import/zerodha";
 import { rateLimit } from "@/lib/security/ratelimit";
 import { dataMode, syntheticInventory } from "@/lib/store/db";
 
-const KINDS: ImportKind[] = ["tradebook", "holdings", "ledger", "dividends", "mf_tradebook", "prices", "corporate_actions", "securities", "fundamentals", "amfi", "deposits"];
+const KINDS: ImportKind[] = ["tradebook", "holdings", "ledger", "dividends", "mf_tradebook", "prices", "corporate_actions", "securities", "fundamentals", "amfi", "deposits", "governance_events"];
 const MAX = 15 * 1024 * 1024;
 
 export async function POST(req: Request) {
