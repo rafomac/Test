@@ -3,7 +3,7 @@ import { audit, kvDelete, kvGet, kvSet, put, upsertPrices, list } from "../store
 import { decrypt, encrypt } from "../security/crypto";
 import { kite, kiteConfig, KiteError, tokenExpiry } from "../kite/client";
 import type { HoldingsSnapshot, SnapshotItem, Trade } from "../types";
-import { ensureSecurities, getSettings, invalidate } from "./repo";
+import { ensureSecurities, getSettings, invalidate, recordCompliance } from "./repo";
 import { inferAssetType } from "../engine/classify";
 import { addDays, todayIST } from "../engine/dates";
 
@@ -81,6 +81,7 @@ export async function syncKite() {
     kvSet("kite_last_sync", JSON.stringify(info));
     audit("kite.sync", `${holdings.length} holdings, ${mf.length} MF`);
     invalidate();
+    try { recordCompliance(); } catch { /* ignore */ }
     return info;
   } catch (e) { onAuthError(e); throw e; }
 }

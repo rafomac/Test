@@ -51,6 +51,8 @@ export interface Security {
   bidAskSpreadPct?: number;
   circuitHits90d?: number;
   suspensions?: string[];
+  /** Shared economic exposures for correlated-risk warnings, e.g. "customer:Apple", "commodity:steel". */
+  exposureTags?: string[];
   source: DataSource;
   updatedAt: string;
 }

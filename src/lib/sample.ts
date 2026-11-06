@@ -144,6 +144,18 @@ export function generateSample(asOf: string, startMonth = "2024-11", seed = 42):
       promoterHoldingPct: 48 + i * 2.5, promoterPledgePctOfPromoter: i === 4 ? 30 : 0,
       promoterHistory: { "2024Q4": 48 + i * 2.5 + (i === 6 ? 3 : 0), "2026Q2": 48 + i * 2.5 },
       website: `https://example.com/${x.s.toLowerCase()}`, websiteQuality: (i % 4) as 0 | 1 | 2 | 3,
+      annualSeries: {
+        ocf: Object.fromEntries(Object.entries(rev).slice(-6).map(([k, v]) => [k, Math.round(v * (0.08 + (i % 3) * 0.02))])),
+        fcf: Object.fromEntries(Object.entries(rev).slice(-6).map(([k, v]) => [k, Math.round(v * (0.03 + (i % 3) * 0.015))])),
+        debt: Object.fromEntries(Object.entries(rev).slice(-6).map(([k, v], j) => [k, Math.round(v * (i === 5 ? 0.2 + j * 0.08 : 0.15))])),
+        opm: Object.fromEntries(Object.keys(rev).slice(-6).map((k, j) => [k, 10 + i + j * 0.4])),
+        roce: Object.fromEntries(Object.keys(rev).slice(-6).map((k, j) => [k, 12 + i * 2 + j * 0.3])),
+        pe: Object.fromEntries(Object.keys(rev).slice(-6).map((k, j) => [k, 14 + i * 6 + j * 2])),
+        shares: Object.fromEntries(Object.keys(rev).slice(-6).map((k, j) => [k, 10 * (i === 7 && j === 5 ? 1.12 : 1)])),
+      },
+      promoterSharesHistory: { "2024Q4": (48 + i * 2.5 + (i === 6 ? 3 : 0)) / 10, "2026Q2": i === 6 ? (48 + i * 2.5) / 10 : (48 + i * 2.5 + (i === 6 ? 3 : 0)) / 10 },
+      totalSharesHistory: { "2024Q4": 10, "2026Q2": 10 },
+      governanceEvents: i === 4 ? [{ date: addDays(asOf, -40), type: "Pledge increased" as const, description: "Promoter pledge raised (synthetic example)", source: "SYNTHETIC — no real filing" }] : undefined,
       socials: i % 2 === 0 ? [{ platform: "LinkedIn", url: "https://example.com", verifiedOfficial: true, postsLast90d: 6 }, { platform: "X", url: "https://example.com", verifiedOfficial: true, postsLast90d: 2 }] : [],
     };
   });
@@ -151,7 +163,9 @@ export function generateSample(asOf: string, startMonth = "2024-11", seed = 42):
     symbol: x.s, conviction: (["High", "Standard", "Exceptional", "Research", "Standard", "High"] as const)[i],
     ratings: { growth: 6 + (i % 4), financialHealth: 5 + (i % 3), valuation: 4 + (i % 5), governance: 7, competitive: 6 },
     evidence: { growth: "interpretation", financialHealth: "verified", valuation: "verified", governance: "interpretation", competitive: "user" },
-    thesis: "Synthetic example thesis.", lastReviewed: addDays(asOf, -30 * (i + 1)), nextReview: addDays(asOf, 60 - i * 20), updatedAt: now,
+    thesis: "Synthetic example thesis.", invalidation: i % 2 ? undefined : "Two consecutive years of revenue growth below 15% without a documented temporary cause.",
+    stage: (["Long-term hold", "Monitoring", "Conviction increased", "Initial position", "Reassess valuation", "Adding capital"] as const)[i], discoveryDate: addDays(asOf, -700 + i * 30),
+    lastReviewed: addDays(asOf, -30 * (i + 1)), nextReview: addDays(asOf, 60 - i * 20), updatedAt: now,
   }));
   // Final snapshot from replayed quantities at asOf prices
   const qty = new Map<string, number>();

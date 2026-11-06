@@ -9,6 +9,11 @@ import { ResearchForm, SecurityForm } from "@/components/EditForms";
 import { criteriaCheck, CATEGORY_LABEL, growthQuality, peBand, promoterTrend, revenueCagr, sma, unpledgedPromoter, yoyGrowth, digitalScore } from "@/lib/engine/research";
 import { runLedger } from "@/lib/engine/positions";
 import { buildPriceBook } from "@/lib/engine/series";
+import { liquidityProfile } from "@/lib/engine/liquidity";
+import { governanceAlerts, promoterChanges } from "@/lib/engine/governance";
+import { ScenarioTool } from "@/components/ScenarioTool";
+import { loadJournal } from "@/lib/server/repo";
+import { sizingCapacity } from "@/lib/engine/planner";
 
 export default async function HoldingDetail({ params }: { params: Promise<{ symbol: string }> }) {
   const { symbol: raw } = await params;
@@ -18,7 +23,7 @@ export default async function HoldingDetail({ params }: { params: Promise<{ symb
   const h = a.holdings.find((x) => x.symbol === symbol);
   const trades = d.trades.filter((t) => t.symbol === symbol).sort((x, y) => (x.date < y.date ? -1 : 1));
   const mb = a.multibaggers.find((m) => m.symbol === symbol);
-  if (!h && !trades.length) notFound();
+  if (!h && !trades.length && !d.research.some((x) => x.symbol === symbol) && !d.fundamentals.some((x) => x.symbol === symbol)) notFound();
   const sec = d.securities.find((x) => x.symbol === symbol);
   const f = d.fundamentals.find((x) => x.symbol === symbol);
   const r = d.research.find((x) => x.symbol === symbol);
@@ -45,6 +50,14 @@ export default async function HoldingDetail({ params }: { params: Promise<{ symb
   const crit = criteriaCheck(f, sec?.marketCapCr);
   const tech = h?.tech;
   const dig = digitalScore(f);
+  const liq = liquidityProfile(symbol, d.prices, sec, h?.value ?? 0, s.positionLimits.initialPositionInr);
+  const pch = promoterChanges(f);
+  const gov = governanceAlerts(f);
+  const jr = loadJournal().filter((e) => e.symbol === symbol);
+  const cap = h?.assetType === "STOCK" ? sizingCapacity(h.invested, h.limitPct, a.capital.limitDenominator.value) : null;
+  const ser = f?.annualSeries ?? {};
+  const years = [...new Set([...Object.keys(f?.revenueAnnual ?? {}), ...Object.values(ser).flatMap((m) => Object.keys(m))])].sort();
+  const seriesRows = Object.keys(ser).length ? years.map((y) => ({ year: y, revenue: f?.revenueAnnual?.[y] ?? null, ocf: ser.ocf?.[y] ?? null, fcf: ser.fcf?.[y] ?? null, debt: ser.debt?.[y] ?? null, opm: ser.opm?.[y] ?? null, npm: ser.npm?.[y] ?? null, roce: ser.roce?.[y] ?? null, pe: ser.pe?.[y] ?? null, shares: ser.shares?.[y] ?? null })) : [];
 
   return (
     <>
@@ -126,6 +139,64 @@ export default async function HoldingDetail({ params }: { params: Promise<{ symb
         </Card>
         <Card title="Score breakdown">
           <T head={["Category", "Weight", "Rating", "Points", "Evidence"]} align={["l", "r", "r", "r", "l"]} rows={(h?.score.breakdown ?? []).map((b) => [CATEGORY_LABEL[b.category], b.weight.toFixed(0), b.rating ?? "—", b.points.toFixed(1), b.evidence])} />
+        </Card>
+      </div>
+
+      <Card className="mt-4" title="Business growth dashboard" subtitle={f ? `Historical facts from ${f.source} (as of ${f.asOf}). Forward-looking items are in the research form below.` : "Import fundamentals with *_FYyyyy columns (ocf, fcf, debt, opm, npm, roce, pe, shares)."}>
+        {seriesRows.length ? (
+          <div className="grid gap-4 xl:grid-cols-3">
+            <div><h3 className="mb-1 text-xs font-semibold">Cash flow (₹ cr)</h3><Bars nf={nf} y="num" height={200} data={seriesRows} xKey="year" bars={[{ key: "ocf", name: "Operating CF" }, { key: "fcf", name: "Free CF", color: "var(--c2)" }]} /></div>
+            <div><h3 className="mb-1 text-xs font-semibold">Debt (₹ cr) vs revenue</h3><LineSeries nf={nf} y="num" height={200} data={seriesRows} xKey="year" lines={[{ key: "debt", name: "Debt", bar: true, color: "var(--c8)" }, { key: "revenue", name: "Revenue", yAxis: "right" }]} rightY="num" /></div>
+            <div><h3 className="mb-1 text-xs font-semibold">Margins & ROCE (%)</h3><LineSeries nf={nf} y="num" height={200} data={seriesRows} xKey="year" lines={[{ key: "opm", name: "Operating margin" }, { key: "npm", name: "Net margin", color: "var(--c2)" }, { key: "roce", name: "ROCE", color: "var(--c3)" }]} /></div>
+            <div><h3 className="mb-1 text-xs font-semibold">Valuation history (P/E)</h3><LineSeries nf={nf} y="num" height={200} data={seriesRows} xKey="year" lines={[{ key: "pe", name: "P/E" }]} /></div>
+            <div><h3 className="mb-1 text-xs font-semibold">Share count (dilution)</h3><Bars nf={nf} y="num" height={200} data={seriesRows} xKey="year" bars={[{ key: "shares", name: "Shares (cr)" }]} /></div>
+            <div><h3 className="mb-1 text-xs font-semibold">Promoter ownership (%)</h3><LineSeries nf={nf} y="num" height={200} data={pch.map((x) => ({ q: x.quarter, pct: x.pct }))} xKey="q" lines={[{ key: "pct", name: "Promoter %" }]} /></div>
+          </div>
+        ) : <Empty title="No multi-year fundamentals series imported" />}
+      </Card>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <Card title="Valuation scenarios (bear / base / bull)" subtitle="Your assumptions → implied outcomes. Clearly labelled estimates.">
+          <ScenarioTool symbol={symbol} revenue0={f?.ttmRevenue ?? null} mcap0={sec?.marketCapCr ?? null} saved={r?.scenarios} requiredDefault={0.15} />
+        </Card>
+        <Card title="Liquidity" subtitle="Reported market value is not assumed realisable. Conservative exit scenarios from price/volume history.">
+          <dl className="grid grid-cols-2 gap-y-1.5 text-sm">
+            <dt className="text-muted">Liquidity score</dt><dd className="num text-right font-semibold">{liq.score !== null ? `${liq.score.toFixed(0)}/100` : "unknown"}</dd>
+            <dt className="text-muted">Avg daily traded value (20d / 120d)</dt><dd className="num text-right">{cmp(liq.adtv20)} / {cmp(liq.adtv120)}</dd>
+            <dt className="text-muted">Avg daily volume (20d)</dt><dd className="num text-right">{liq.advVolume20?.toFixed(0) ?? "—"}</dd>
+            <dt className="text-muted">No-trade days (90)</dt><dd className="num text-right">{liq.zeroVolumeDays90 ?? "—"}</dd>
+            <dt className="text-muted">Liquidity change (20d vs 120d)</dt><dd className="num text-right">{pct(liq.deterioration)}</dd>
+            <dt className="text-muted">Free-float market cap</dt><dd className="num text-right">{liq.freeFloatMcapCr !== null ? `₹${liq.freeFloatMcapCr.toFixed(0)} cr` : "—"}</dd>
+            <dt className="text-muted">Spread / delivery % / circuits (90d)</dt><dd className="num text-right">{liq.spreadPct ?? "—"}% / {liq.deliveryPct ?? "—"}% / {liq.circuitHits90d ?? "—"}</dd>
+            <dt className="text-muted">Listing</dt><dd className="text-right">{liq.isSME ? `SME (min lot ${inr(liq.minLotValue)})` : "Main board"}{liq.suspended ? " · suspension history" : ""}</dd>
+          </dl>
+          {liq.smeBlocksInitialRule && <Note tone="warn">SME minimum lot exceeds the ₹{s.positionLimits.initialPositionInr.toLocaleString("en-IN")} initial-position rule — not compatible with your process.</Note>}
+          <T className="mt-2" head={["Exit at % of daily volume", "Days", "Est. impact", "Est. realisable"]} align={["l", "r", "r", "r"]} rows={liq.exits.map((x) => [pct(x.participation, 0), x.days?.toFixed(1) ?? "—", pct(x.impactPct), inr(x.realisable)])} />
+          <Note>{liq.scoreBasis.join(" · ")}. Impact uses a square-root model (σ_daily × √participation + half-spread) — an estimate.</Note>
+        </Card>
+        <Card title="Promoter monitoring" subtitle="Facts vs interpretation are labelled. A % decline is not assumed to be a sale.">
+          {pch.length ? <T head={["Quarter", "Promoter %", "Change", "Promoter shares", "Total shares", "Reason"]} align={["l", "r", "r", "r", "r", "l"]} rows={[...pch].reverse().map((x) => [x.quarter, x.pct.toFixed(2), x.changePP !== null ? `${x.changePP > 0 ? "+" : ""}${x.changePP.toFixed(2)} pp` : "—", x.promoterShares ?? "—", x.totalShares ?? "—", <span key="r" className={x.reason === "Promoter sale" ? "text-neg" : x.reason.startsWith("Unknown") ? "text-muted" : ""}>{x.reason}</span>])} /> : <Empty title="No promoter history imported" />}
+        </Card>
+        <Card title="Governance alerts">
+          {gov.length ? <ul className="space-y-1.5 text-sm">{gov.map((g, i) => <li key={i}><Badge tone={g.severity === "high" ? "neg" : "warn"}>{g.kind === "fact" ? "Fact" : "Interpretation"}</Badge> <span className="text-muted">{g.date}</span> {g.text}{g.source && <span className="block truncate text-[11px] text-muted">Source: {g.source}</span>}</li>)}</ul> : <Empty title="No governance events recorded">Import governance events (auditor changes, pledges, allotments, penalties) with sources.</Empty>}
+        </Card>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <Card title="Position sizing" subtitle={`Limit applies to invested cost ÷ ${a.capital.limitDenominator.label}.`}>
+          {h?.assetType === "STOCK" ? (
+            <dl className="grid grid-cols-2 gap-y-1.5 text-sm">
+              <dt className="text-muted">Invested / cost weight</dt><dd className="num text-right">{inr(h.invested)} / {pct(h.limitWeight)}</dd>
+              <dt className="text-muted">Market value / weight</dt><dd className="num text-right">{inr(h.value)} / {pct(h.weight)}</dd>
+              <dt className="text-muted">Conviction limit</dt><dd className="num text-right">{h.conviction} {h.limitPct}% = {inr(cap?.maxCost)}</dd>
+              <dt className="text-muted">Remaining capacity</dt><dd className="num text-right">{inr(Math.max(0, cap?.capacity ?? 0))}</dd>
+              <dt className="text-muted">Above limit</dt><dd className={`num text-right ${h.aboveLimit ? "text-warn" : ""}`}>{h.aboveLimit ? inr(h.aboveLimit) : "—"}</dd>
+              <dt className="text-muted">If price falls 30% / 50%</dt><dd className="num text-right">{cmp(-(h.value ?? 0) * 0.3)} / {cmp(-(h.value ?? 0) * 0.5)} ({pct((h.weight ?? 0) * -0.3)} / {pct((h.weight ?? 0) * -0.5)} of portfolio)</dd>
+            </dl>
+          ) : <p className="text-sm text-muted">Not a direct-equity holding.</p>}
+        </Card>
+        <Card title="Decision journal" right={<Link className="text-xs text-accent" href={`/journal?symbol=${encodeURIComponent(symbol)}`}>New entry →</Link>}>
+          {jr.length ? <ul className="space-y-2 text-sm">{jr.map((e) => <li key={e.id}><span className="text-muted">{e.date}</span> <Badge>{e.kind}</Badge> {inr(e.amount)} — {e.reason}{e.exitConditions && <span className="block text-xs text-muted">Exit if: {e.exitConditions}</span>}</li>)}</ul> : <p className="text-sm text-muted">No journal entries for this company.</p>}
         </Card>
       </div>
 

@@ -44,7 +44,7 @@ export function getDb(): DB {
   return db;
 }
 
-export type Collection = "trades" | "cash" | "actions" | "securities" | "fundamentals" | "research" | "snapshots" | "imports" | "conflicts";
+export type Collection = "trades" | "cash" | "actions" | "securities" | "fundamentals" | "research" | "snapshots" | "imports" | "conflicts" | "journal" | "alertStates" | "compliance";
 
 export function list<T>(collection: Collection): T[] {
   const rows = getDb().prepare("SELECT data FROM docs WHERE collection = ? ORDER BY id").all(collection) as { data: string }[];

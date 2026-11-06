@@ -27,6 +27,37 @@ export default function Sip() {
         <Stat label="Cumulative gap since plan start" value={inr(last?.cumGap ?? 0)} tone={(last?.cumGap ?? 0) < 0 ? "neg" : "pos"} sub={`Since ${s.planStartMonth}`} />
         <Stat label="Consistency" value={sip.consistency.hitRate !== null ? pct(sip.consistency.hitRate, 0) : "—"} sub={`${sip.consistency.monthsMet}/${sip.consistency.monthsInPlan} months met · streak ${sip.consistency.streak}`} />
       </div>
+      {sip.months.length > 0 && (() => {
+        const years = [...new Set(sip.months.map((m) => m.month.slice(0, 4)))];
+        const cell = (m: (typeof sip.months)[number] | undefined, key: number) => {
+          if (!m) return <td key={key} className="p-0.5"><div className="h-9 rounded bg-panel-2/40" /></td>;
+          const r = m.target > 0 ? m.contribution / m.target : null;
+          const bg = !m.inPlan ? "bg-panel-2" : m.status === "In progress" ? "bg-warn/25" : r !== null && r >= 1 ? "bg-pos/35" : r !== null && r > 0 ? "bg-warn/35" : "bg-neg/35";
+          return <td key={key} className="p-0.5"><div title={`${m.month}: ${inr(m.contribution)} of ${inr(m.target)} — ${m.status}`} className={`flex h-9 flex-col items-center justify-center rounded text-[10px] ${bg}`}><span className="num font-semibold">{m.inPlan ? cmp(m.contribution) : "—"}</span></div></td>;
+        };
+        const last12 = sip.months.filter((m) => m.inPlan).slice(-12);
+        const r12t = last12.reduce((x, m) => x + m.target, 0), r12a = last12.reduce((x, m) => x + m.contribution, 0);
+        return (
+          <div className="mt-4 grid gap-4 xl:grid-cols-3">
+            <Card className="xl:col-span-2" title="Contribution calendar" subtitle="Green = target met · amber = partial / in progress · red = missed · grey = before plan start.">
+              <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr className="text-muted"><th className="w-12 text-left">Year</th>{["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"].map((x, i) => <th key={i}>{x}</th>)}<th className="text-right">Total</th></tr></thead>
+                <tbody>{years.map((y) => <tr key={y}><td className="font-medium">{y}</td>{Array.from({ length: 12 }, (_, i) => cell(sip.months.find((m) => m.month === `${y}-${String(i + 1).padStart(2, "0")}`), i))}<td className="num text-right">{cmp(sip.months.filter((m) => m.month.startsWith(y) && m.inPlan).reduce((x, m) => x + m.contribution, 0))}</td></tr>)}</tbody></table></div>
+            </Card>
+            <Card title="Rolling 12 months & year-end">
+              <dl className="grid grid-cols-2 gap-y-1.5 text-sm">
+                <dt className="text-muted">Last 12 plan months</dt><dd className="num text-right">{inr(r12a)} / {inr(r12t)}</dd>
+                <dt className="text-muted">Achievement</dt><dd className="num text-right">{pct(r12t ? r12a / r12t : null, 0)}</dd>
+                <dt className="text-muted">Months met</dt><dd className="num text-right">{last12.filter((m) => m.status === "Met" || m.status === "Surplus").length} / {last12.length}</dd>
+                <dt className="text-muted">Capital deployed to stocks (12m)</dt><dd className="num text-right">{inr(last12.reduce((x, m) => x + m.buys.STOCK - m.sells.STOCK, 0))}</dd>
+                <dt className="text-muted">Net parked in Liquid BeES (12m)</dt><dd className="num text-right">{inr(last12.reduce((x, m) => x + m.liquidNet, 0))}</dd>
+                <dt className="text-muted">Zerodha cash now</dt><dd className="num text-right">{a.capital.reserve.availableCash !== null ? inr(a.capital.reserve.availableCash) : "—"}</dd>
+                <dt className="text-muted">Liquid BeES now</dt><dd className="num text-right">{inr(a.capital.reserve.liquidBees)}</dd>
+              </dl>
+              {sip.annual.length > 0 && <T className="mt-3" head={["Year-end", "Target", "Actual", "Gap"]} align={["l", "r", "r", "r"]} rows={sip.annual.map((y) => [y.year, cmp(y.target), cmp(y.actual), <span key="g" className={y.gap < 0 ? "text-neg" : "text-pos"}>{cmp(y.gap)}</span>])} />}
+            </Card>
+          </div>
+        );
+      })()}
       {!sip.months.length ? <div className="mt-4"><Empty title="No transactions yet">Import the Console ledger (Funds → Statement) and tradebook.</Empty></div> : (
         <>
           <div className="mt-4 grid gap-4 xl:grid-cols-2">

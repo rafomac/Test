@@ -63,6 +63,7 @@ export function importFile(kind: ImportKind, text: string, fileName: string, opt
     logImport(l);
     audit("import." + kind, `${fileName}: ${imported} imported, ${duplicates} dup, ${conflicts} conflicts`);
     invalidate();
+    try { recordCompliance(); } catch { /* analytics may be incomplete during first imports */ }
     return l;
   };
   const take = <T extends { id: string }>(coll: "trades" | "cash" | "actions", r: { records: T[]; rowsRead: number; skipped: unknown[]; warnings: string[] }) => {
@@ -160,4 +161,35 @@ export function ensureSecurities(items: { symbol: string; isin?: string; name?: 
     if (existing.has(i.symbol)) continue;
     put("securities", i.symbol, { symbol: i.symbol, isin: i.isin, name: i.name, exchange: i.exchange, sector: i.sector, assetType: i.assetType ?? inferAssetType(i.symbol, i.name, s.liquidSymbols), source: "KITE_API", updatedAt: new Date().toISOString() } satisfies Security);
   }
+}
+
+// ---------------- V2 server helpers ----------------
+import type { AlertState, ComplianceSnapshot, JournalEntry } from "../types";
+import { evaluateAlerts } from "../engine/alerts";
+
+export function loadJournal(): JournalEntry[] { return list<JournalEntry>("journal").sort((a, b) => (a.date < b.date ? 1 : -1)); }
+export function loadAlertStates(): AlertState[] { return list<AlertState>("alertStates"); }
+
+export function getAlerts() {
+  const a = getAnalytics();
+  const d = loadData();
+  return evaluateAlerts(a, d.fundamentals, d.research, d.prices, d.securities, getSettings(), loadAlertStates());
+}
+
+/**
+ * Immutable position-limit compliance snapshot. The denominator kind and value are stored with it,
+ * so changing the denominator setting later never rewrites historical compliance reports.
+ */
+export function recordCompliance(): ComplianceSnapshot | null {
+  const a = getAnalytics();
+  const s = getSettings();
+  const stocks = a.holdings.filter((h) => h.assetType === "STOCK");
+  if (!stocks.length) return null;
+  const snap: ComplianceSnapshot = {
+    id: `${a.asOf}-${s.positionLimitDenominator}`, date: a.asOf, denominator: s.positionLimitDenominator, denominatorValue: a.capital.limitDenominator.value, limits: s.positionLimits,
+    rows: stocks.map((h) => ({ symbol: h.symbol, cost: h.invested, weight: h.limitWeight ?? 0, limitPct: h.limitPct, conviction: h.conviction, over: h.overLimit })),
+  };
+  // One per day+denominator; never overwritten once written.
+  if (!list<ComplianceSnapshot>("compliance").some((c) => c.id === snap.id)) put("compliance", snap.id, snap);
+  return snap;
 }

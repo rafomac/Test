@@ -110,7 +110,8 @@ export function buildSeries(
     pendingFlow += flowsByDate.get(d) ?? 0;
     pendingDiv += divByDate.get(d) ?? 0;
     const dow = new Date(d + "T00:00:00Z").getUTCDay();
-    if (dow === 0 || dow === 6) continue;
+    // Weekend days are skipped, except the final as-of date so trailing weekend flows (e.g. a Saturday UPI deposit) are never dropped.
+    if ((dow === 0 || dow === 6) && d !== endDate) continue;
     let value = 0;
     const missing: string[] = [];
     for (const [s, q] of qty) {

@@ -168,5 +168,5 @@ export const SCENARIOS = [
   { rate: 0.2, label: "20%", note: "Aggressive" },
   { rate: 0.25, label: "25%", note: "Very aggressive, uncertain" },
   { rate: 0.3, label: "30%", note: "Exceptional, highly uncertain" },
-  { rate: 0.4, label: "40%", note: "Aspirational stretch — rarely sustained" },
+  { rate: 0.4, label: "40%", note: "Extreme aspirational scenario — not a realistic base case" },
 ];

@@ -14,14 +14,17 @@ npm install                      # Node >= 22.13 (uses built-in node:sqlite)
 cp .env.example .env.local       # fill in the values (see below)
 npm run hash-password -- "choose-a-dashboard-password"   # paste output into .env.local
 npm run dev                      # http://localhost:3000
-npm test                         # 65 calculation / import / integrity tests
+npm test                         # 100 calculation / import / integrity tests
 ```
 
 In development without `APP_PASSWORD_HASH` the app runs open with a warning banner; a production build refuses
 to serve until it is set.
 
-To explore the UI before connecting anything: **Settings → Sample data → Load synthetic sample**. It uses fictional
-`ZZ…` tickers and generated prices, is badged SYNTHETIC on every screen, and is removed with one click.
+**Live vs demo mode.** `npm run dev` / `npm start` run in **live** mode (`data/portfolio.db`), which never accepts
+synthetic data. To explore first, run `npm run demo` (port 3001): a separate `data/demo.db` where you can load a
+fictional sample (`ZZ…` tickers, generated prices). Broker connection and real imports are disabled in demo mode.
+If an older database contains synthetic records, Settings → Data quality → *Synthetic-data migration* backs it up and
+removes them; imports stay blocked until that is done.
 
 ## Connecting Zerodha (what you need to provide)
 
@@ -48,6 +51,10 @@ from Console (Settings → Import), one CSV per report/financial year:
 | Fundamentals | your research source (template) | Revenue CAGR, valuation, promoter/pledge, scores |
 
 Re-imports are idempotent; differing records with the same identity become **conflicts** for review, never silent overwrites.
+
+## V2 upgrade
+See [CHANGELOG.md](CHANGELOG.md) and [docs/V2_IMPLEMENTATION_REPORT.md](docs/V2_IMPLEMENTATION_REPORT.md) — the
+calculation audit, integration status, reconciliation report, security assessment and remaining tasks.
 
 ## Documentation
 

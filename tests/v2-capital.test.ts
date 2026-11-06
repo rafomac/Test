@@ -120,3 +120,16 @@ describe("Synthetic sample — V2 reconciliation", () => {
     for (const d of a.capital.deployment) if (d.target > 0) expect(d.contributionAch).toBeCloseTo(d.contribution / d.target, 12);
   });
 });
+
+describe("Weekend flows at the end of the window", () => {
+  it("a Saturday deposit on the as-of date is not dropped", () => {
+    const trades = [buy("2024-01-01", "A", 10, 100)];
+    const cash = [dep("2024-01-01", 1000), dep("2024-01-06", 500)]; // 2024-01-06 is a Saturday
+    const prices = px("A", [["2024-01-01", 100], ["2024-01-05", 100]]);
+    const sec = buildSeries(trades, [], cash, buildPriceBook(prices), "2024-01-06").points;
+    const cl = cashLedger(trades, cash, sec.map((p) => p.date))!;
+    expect(cl[cl.length - 1].cash).toBe(500);
+    const b = valueBridge(accountSeries(sec, cl), sec, cl, "2023-12-31", "2024-01-06", 1000 + 500);
+    expect(b.residual).toBeCloseTo(0, 9);
+  });
+});

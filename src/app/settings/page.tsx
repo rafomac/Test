@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getSettings, hasSynthetic } from "@/lib/server/repo";
 import { kiteStatus } from "@/lib/server/kite-service";
-import { list } from "@/lib/store/db";
+import { list, dataMode } from "@/lib/store/db";
 import { Card, Note, PageHeader, T, Badge } from "@/components/ui";
 import { KitePanel } from "@/components/KitePanel";
 import { Importer } from "@/components/Importer";
@@ -23,6 +23,8 @@ const CAPS: [string, string, string][] = [
   ["Market cap & AMFI category", "AMFI half-yearly list + security master", "Import"],
   ["Fundamentals, promoter, pledge", "Annual reports / exchange filings / screener export", "Import"],
   ["Historical portfolio snapshots", "Kept by this app from each sync (immutable)", "Built over time"],
+  ["Governance events (auditor, pledge, allotments)", "Exchange filings — governance template with source", "Import"],
+  ["Contract-note charges (brokerage, STT, GST…)", "Contract notes / Console — charge columns in tradebook import", "Import"],
 ];
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
@@ -48,8 +50,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         {imports.length > 0 && <T className="mt-4" head={["When", "Type", "File", "Read", "Imported", "Dup", "Skipped", "Warnings"]} align={["l", "l", "l", "r", "r", "r", "r", "l"]} rows={imports.map((l) => [new Date(l.at).toLocaleString("en-IN"), l.kind, l.fileName, l.rowsRead, l.rowsImported, l.duplicates, l.rowsSkipped, <span key="w" className="whitespace-normal text-xs text-muted">{l.warnings.slice(0, 2).join(" ")}</span>])} />}
       </Card>
       <Card className="mt-4" title="Configuration"><SettingsForm initial={s} /></Card>
-      <Card className="mt-4" title="Sample data" subtitle="A fictional portfolio (ZZ tickers, generated prices) for exploring the UI. Tagged SYNTHETIC everywhere and removable in one click.">
-        <SampleButtons loaded={hasSynthetic()} />
+      <Card className="mt-4" title={`Data mode: ${dataMode().toUpperCase()}`} subtitle="Live mode uses data/portfolio.db and never accepts synthetic data. Demo mode (npm run demo) uses a separate data/demo.db with fictional companies; broker connection and real imports are disabled there.">
+        <SampleButtons loaded={hasSynthetic()} mode={dataMode()} />
       </Card>
     </>
   );
