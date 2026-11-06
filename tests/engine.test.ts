@@ -286,3 +286,18 @@ describe("Risk", () => {
     expect(s.annualisedReturn).toBeCloseTo(Math.pow(1.01, 12) - 1, 10);
   });
 });
+
+import { simulateAllocation } from "@/lib/engine/rebalance";
+describe("Allocation simulator", () => {
+  it("fills shortfalls first and conserves capital", () => {
+    const r = simulateAllocation({ current: { Mid: 100, Small: 500, Micro: 100, Nano: 0 }, target: { Mid: 0.2, Small: 0.45, Micro: 0.25, Nano: 0.1 }, etfValue: 0, etfSellFraction: 0, reserve: 300, reserveUseFraction: 1, monthlyContribution: 0, months: 0, directShareOfContribution: 1 });
+    expect(Object.values(r.alloc).reduce((s, x) => s + x, 0)).toBeCloseTo(300, 9);
+    expect(r.alloc.Small).toBeCloseTo(0, 9); // Small already over target (500 > 450)
+    expect(Object.values(r.afterPct).reduce((s, x) => s + x, 0)).toBeCloseTo(1, 9);
+  });
+  it("with ample capital reaches target exactly", () => {
+    const r = simulateAllocation({ current: { Mid: 0, Small: 100, Micro: 0, Nano: 0 }, target: { Mid: 0.2, Small: 0.45, Micro: 0.25, Nano: 0.1 }, etfValue: 0, etfSellFraction: 0, reserve: 0, reserveUseFraction: 0, monthlyContribution: 100, months: 99, directShareOfContribution: 1 });
+    expect(r.afterPct.Mid).toBeCloseTo(0.2, 9);
+    expect(r.afterPct.Nano).toBeCloseTo(0.1, 9);
+  });
+});
