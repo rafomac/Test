@@ -14,7 +14,10 @@
    node -e "console.log('SESSION_SECRET='+require('crypto').randomBytes(48).toString('base64'))"
    node -e "console.log('ENCRYPTION_KEY='+require('crypto').randomBytes(32).toString('base64'))"
    ```
-4. At https://developers.kite.trade create an app (Kite Connect subscription; check current pricing there).
+4. At https://developers.kite.trade create an app. The free **Personal** API is enough for holdings, mutual funds,
+   funds/cash and everything built from your Console imports (XIRR, SIP tracking, allocation, research). It has no
+   historical candles: prices then accumulate from each daily Sync, and past prices can be imported as CSV.
+   The paid Connect plan adds automatic historical prices (needed for full-history TWR, 200 DMA, liquidity from volume).
    Redirect URL: `http://127.0.0.1:3000/api/kite/callback`. Put its API key and secret in `.env.local`
    as `KITE_API_KEY=` and `KITE_API_SECRET=`.
 5. Start it:

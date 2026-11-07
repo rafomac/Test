@@ -37,7 +37,9 @@ function token(): { apiKey: string; accessToken: string } {
 }
 
 function onAuthError(e: unknown) {
-  if (e instanceof KiteError && (e.status === 403 || e.errorType === "TokenException")) kvDelete("kite_session");
+  // Only TokenException means the login expired. PermissionException (e.g. historical data on the free
+  // Personal plan) is also HTTP 403 but must NOT end the session.
+  if (e instanceof KiteError && e.errorType === "TokenException") kvDelete("kite_session");
 }
 
 export async function logoutKite() {
@@ -61,7 +63,7 @@ export async function syncKite() {
       ...holdings.map((h) => ({
         symbol: h.tradingsymbol, isin: h.isin, exchange: h.exchange, assetType: inferAssetType(h.tradingsymbol, "", s.liquidSymbols),
         // quantity + T1 (bought, not yet settled). Collateral/pledged shares remain in `quantity` on Kite.
-        quantity: h.quantity + (h.t1_quantity ?? 0), averagePrice: h.average_price, lastPrice: h.last_price, pnl: h.pnl,
+        quantity: h.quantity + (h.t1_quantity ?? 0), averagePrice: h.average_price, lastPrice: h.last_price > 0 ? h.last_price : h.close_price, pnl: h.pnl,
       })),
       ...mf.filter((m) => m.quantity > 0).map((m) => ({ symbol: m.tradingsymbol, assetType: "MF" as const, quantity: m.quantity, averagePrice: m.average_price, lastPrice: m.last_price })),
     ];
@@ -108,7 +110,11 @@ export async function syncHistorical(fromDate?: string) {
       } catch (e) {
         onAuthError(e);
         errors.push(`${sym}: ${(e as Error).message}`);
-        if (e instanceof KiteError && e.status === 403) break;
+        if (e instanceof KiteError && e.errorType === "PermissionException") {
+          audit("kite.historical", "not included in plan");
+          return { points, errors: [], planLimited: true, note: "Your Kite plan (free Personal API) does not include historical candles. Prices still build up automatically from each daily Sync, and you can import past prices from CSV (Settings → Import → Prices)." };
+        }
+        if (e instanceof KiteError && e.errorType === "TokenException") break;
       }
       await new Promise((res) => setTimeout(res, 400));
     }

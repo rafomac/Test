@@ -13,7 +13,7 @@ export function useApi() {
       const res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) { setMsg(j.error ?? `Error ${res.status}`); return null; }
-      setMsg("Saved"); r.refresh(); return j;
+      setMsg(typeof j?.note === "string" && j.planLimited ? j.note : "Saved"); r.refresh(); return j;
     } finally { setBusy(false); }
   }
   return { send, busy, msg, setMsg };
