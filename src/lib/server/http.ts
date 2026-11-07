@@ -17,3 +17,10 @@ export function errMsg(e: unknown) {
   const m = e instanceof Error ? e.message : String(e);
   return m.replace(/token\s+[\w:]+/gi, "token [redacted]").slice(0, 300);
 }
+
+/** Cookies are marked Secure whenever the request arrived over HTTPS (directly or via a proxy). */
+export function isHttps(req: Request): boolean {
+  const xf = req.headers.get("x-forwarded-proto");
+  if (xf) return xf.split(",")[0].trim() === "https";
+  return new URL(req.url).protocol === "https:";
+}

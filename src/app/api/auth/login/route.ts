@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { verifyPassword } from "@/lib/security/crypto";
 import { issueSession, SESSION_COOKIE, SESSION_TTL_S } from "@/lib/security/session";
 import { rateLimit } from "@/lib/security/ratelimit";
-import { bad, sameOrigin } from "@/lib/server/http";
+import { bad, isHttps, sameOrigin } from "@/lib/server/http";
 import { audit } from "@/lib/store/db";
 
 export async function POST(req: Request) {
@@ -17,6 +17,6 @@ export async function POST(req: Request) {
   audit("auth.ok", ip);
   const next = String(form.get("next") ?? "/");
   const res = NextResponse.redirect(new URL(next.startsWith("/") && !next.startsWith("//") ? next : "/", req.url), 303);
-  res.cookies.set(SESSION_COOKIE, issueSession(), { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/", maxAge: SESSION_TTL_S });
+  res.cookies.set(SESSION_COOKIE, issueSession(), { httpOnly: true, secure: isHttps(req), sameSite: "lax", path: "/", maxAge: SESSION_TTL_S });
   return res;
 }
