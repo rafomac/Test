@@ -4,6 +4,8 @@ import { kiteStatus } from "@/lib/server/kite-service";
 import { list, dataMode } from "@/lib/store/db";
 import { Card, Note, PageHeader, T, Badge } from "@/components/ui";
 import { KitePanel } from "@/components/KitePanel";
+import { BhavcopyPanel } from "@/components/BhavcopyPanel";
+import { defaultRange, jobStatus, universe } from "@/lib/server/bhav";
 import { Importer } from "@/components/Importer";
 import { SettingsForm, SampleButtons } from "@/components/SettingsForm";
 import type { ImportLog } from "@/lib/types";
@@ -18,7 +20,7 @@ const CAPS: [string, string, string][] = [
   ["Deposits & withdrawals", "Console → Funds → Statement (ledger) CSV", "Import"],
   ["Dividends", "Console → Reports → Dividends CSV (credited to bank, not ledger)", "Import"],
   ["Corporate actions", "No Kite/Console export — enter via template", "Manual"],
-  ["Historical prices", "Kite historical API (plan with historical data) or CSV", "API / Import"],
+  ["Historical prices & volume", "Free NSE/BSE bhavcopy (one-click), or Kite historical API on the paid plan", "Download"],
   ["Benchmark TRI series", "niftyindices.com historical TRI downloads → CSV", "Import"],
   ["Market cap & AMFI category", "AMFI half-yearly list + security master", "Import"],
   ["Fundamentals, promoter, pledge", "Annual reports / exchange filings / screener export", "Import"],
@@ -45,6 +47,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <T head={["Data", "Source", "Access"]} rows={CAPS.map(([a, b, c]) => [<span key="a" className="whitespace-normal">{a}</span>, <span key="b" className="whitespace-normal text-xs text-muted">{b}</span>, <Badge key="c" tone={c === "Direct" ? "pos" : c === "Manual" ? "warn" : "accent"}>{c}</Badge>])} />
         </Card>
       </div>
+      <Card className="mt-4" title="Historical prices — free exchange bhavcopy" subtitle="Fills the price history the free Kite Personal API does not provide.">
+        <BhavcopyPanel defaultFrom={defaultRange().from} defaultTo={defaultRange().to} universe={universe().length} initialJob={jobStatus()} />
+      </Card>
       <Card className="mt-4" title="Import Zerodha reports & reference data" subtitle="Re-importing the same file is safe: identical rows are skipped and differing rows become conflicts for review — never silently overwritten.">
         <Importer />
         {imports.length > 0 && <T className="mt-4" head={["When", "Type", "File", "Read", "Imported", "Dup", "Skipped", "Warnings"]} align={["l", "l", "l", "r", "r", "r", "r", "l"]} rows={imports.map((l) => [new Date(l.at).toLocaleString("en-IN"), l.kind, l.fileName, l.rowsRead, l.rowsImported, l.duplicates, l.rowsSkipped, <span key="w" className="whitespace-normal text-xs text-muted">{l.warnings.slice(0, 2).join(" ")}</span>])} />}

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.0 — Free historical prices (NSE/BSE bhavcopy)
+- One-click downloader for official end-of-day files (NSE `sec_bhavdata_full`, BSE BhavCopy/EQ_ISINCODE) for exactly
+  the days and securities you need; ~1 request/second, resumable (completed days are remembered), cancellable,
+  failed days retried on the next run. Works with the free Kite Personal API.
+- Manual upload of any number of bhavcopy CSV/ZIP files (NSE full, legacy NSE cm, UDiFF NSE/BSE, legacy BSE).
+- ISIN matching across exchanges (BSE-only micro-caps supported); NSE preferred when both exist.
+- Stores unadjusted closes + volume; updates 20-session NSE delivery % and SME flags in the security master.
+- Official closes supersede same-day intraday Kite prices, with every replacement audited.
+- Free-plan fixes: a PermissionException no longer logs you out; close-price fallback for missing LTP.
+- Cookies are Secure whenever the request is HTTPS (local http://127.0.0.1 sign-in works).
+
 ## 2.0.0 — V2 upgrade (audit, enhance, complete)
 
 ### Priority 0 — financial accuracy (fixes)

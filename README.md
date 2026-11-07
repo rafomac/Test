@@ -14,7 +14,7 @@ npm install                      # Node >= 22.13 (uses built-in node:sqlite)
 cp .env.example .env.local       # fill in the values (see below)
 npm run hash-password -- "choose-a-dashboard-password"   # paste output into .env.local
 npm run dev                      # http://localhost:3000
-npm test                         # 100 calculation / import / integrity tests
+npm test                         # 111 calculation / import / integrity tests
 ```
 
 In development without `APP_PASSWORD_HASH` the app runs open with a warning banner; a production build refuses
@@ -48,6 +48,7 @@ from Console (Settings → Import), one CSV per report/financial year:
 | Corporate actions | (manual template) | Splits, bonuses, mergers, demergers |
 | AMFI market-cap list | amfiindia.com (half-yearly) | Official Large/Mid/Small categories |
 | Nifty TRI series | niftyindices.com → Historical data | Benchmarks |
+| Historical prices | **Settings → Download exchange prices** (free NSE/BSE bhavcopy, one click) | TWR, 200-DMA, liquidity, sector history |
 | Fundamentals | your research source (template) | Revenue CAGR, valuation, promoter/pledge, scores |
 
 Re-imports are idempotent; differing records with the same identity become **conflicts** for review, never silent overwrites.

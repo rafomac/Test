@@ -26,8 +26,11 @@
    npm start
    ```
    Open **http://127.0.0.1:3000** (use 127.0.0.1, matching the redirect URL) and sign in with your dashboard password.
-6. Settings → **Login with Zerodha** → **Sync holdings & funds** → **Fetch historical prices**.
-7. Settings → Import, once: Console tradebook (each financial year), funds statement (ledger), dividends.
+6. Settings → **Login with Zerodha** → **Sync holdings & funds**.
+7. After importing your tradebook (next step), click **Download exchange prices** (Settings → Historical prices).
+   It fetches free NSE/BSE end-of-day files for the days you need (~1 per second; a 2-year history takes ~10 minutes)
+   and skips days already stored. Run it again occasionally to top up. (Paid-plan users can use Fetch historical prices instead.)
+8. Settings → Import, once: Console tradebook (each financial year), funds statement (ledger), dividends.
    Optional: AMFI list, Nifty TRI series, fundamentals.
-8. Daily: `npm start`, log in to Zerodha again (tokens expire ~6 AM IST), Sync.
-9. Back up `data/portfolio.db` regularly. Never share `.env.local`.
+9. Daily: `npm start`, log in to Zerodha again (tokens expire ~6 AM IST), Sync.
+10. Back up `data/portfolio.db` regularly. Never share `.env.local`.

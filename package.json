@@ -18,6 +18,7 @@
   "dependencies": {
     "clsx": "^2.1.1",
     "exceljs": "^4.4.0",
+    "fflate": "^0.8.2",
     "next": "^15.5.4",
     "papaparse": "^5.5.3",
     "react": "^19.1.1",

@@ -19,7 +19,9 @@ export type DataSource =
   | "COIN_MF"
   | "MANUAL"
   | "CSV_IMPORT"
-  | "SYNTHETIC_SAMPLE";
+  | "SYNTHETIC_SAMPLE"
+  | "NSE_BHAVCOPY"
+  | "BSE_BHAVCOPY";
 
 export interface Security {
   symbol: string; // tradingsymbol, e.g. "INFY", or MF fund name key

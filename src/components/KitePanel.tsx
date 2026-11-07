@@ -21,7 +21,7 @@ export function KitePanel({ status }: { status: { configured: boolean; connected
         </div>
       )}
       {status.lastSync && <p className="text-xs text-muted">Last sync {new Date(status.lastSync.at).toLocaleString("en-IN")}: {status.lastSync.holdings} holdings, {status.lastSync.mf} MF, cash {status.lastSync.cash ?? "—"}</p>}
-      <p className="text-xs text-muted">Free <b>Personal</b> plan: holdings, MF holdings and funds sync fully. Historical candles need the paid Connect plan — on the free plan, each daily Sync records that day&apos;s prices (history builds forward) and past prices can be imported as CSV.</p>
+      <p className="text-xs text-muted">Free <b>Personal</b> plan: holdings, MF holdings and funds sync fully. Historical candles need the paid Connect plan — on the free plan, use “Download exchange prices” below for the full history (free).</p>
       {busy && <p className="text-xs text-muted">Working…</p>}
       {msg && <p className="text-xs text-muted">{msg}</p>}
     </div>

@@ -107,15 +107,20 @@ export function resolveConflict(id: string, action: "kept-existing" | "accepted-
   return true;
 }
 
-export function upsertPrices(points: PricePoint[]) {
+/**
+ * `supersedes`: sources this batch may replace without raising a conflict (e.g. an official exchange
+ * close replacing an intraday Kite LTP). Each replacement is counted and audited — never silent.
+ */
+export function upsertPrices(points: PricePoint[], opts: { supersedes?: string[] } = {}) {
   const d = getDb();
   const sel = d.prepare("SELECT close, source FROM prices WHERE symbol = ? AND date = ?");
   const up = d.prepare("INSERT INTO prices (symbol, date, close, volume, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(symbol, date) DO UPDATE SET close = excluded.close, volume = excluded.volume, source = excluded.source");
-  let inserted = 0, updated = 0, flagged = 0;
+  let inserted = 0, updated = 0, flagged = 0, superseded = 0;
   d.exec("BEGIN");
   try {
     for (const p of points) {
       const ex = sel.get(p.symbol, p.date) as { close: number; source: string } | undefined;
+      if (ex && ex.source !== p.source && opts.supersedes?.includes(ex.source)) { superseded++; up.run(p.symbol, p.date, p.close, p.volume ?? null, p.source); updated++; continue; }
       if (ex && Math.abs(ex.close / p.close - 1) > 0.01 && ex.source !== p.source) {
         // Material disagreement between sources: keep existing, record conflict.
         const now = new Date().toISOString();
@@ -132,7 +137,8 @@ export function upsertPrices(points: PricePoint[]) {
     d.exec("ROLLBACK");
     throw e;
   }
-  return { inserted, updated, flagged };
+  if (superseded) audit("prices.superseded", `${superseded} price(s) replaced by ${points[0]?.source}`);
+  return { inserted, updated, flagged, superseded };
 }
 
 export function listPrices(symbol?: string): PricePoint[] {
